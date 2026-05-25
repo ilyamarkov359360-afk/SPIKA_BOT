@@ -25,14 +25,13 @@ def init_database():
 
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER UNIQUE NOT NULL,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS monitoring_events (
+            id BIGSERIAL PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            telegram_id BIGINT,
+            details TEXT,
+            duration_seconds DOUBLE PRECISION,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -215,6 +214,11 @@ def init_database():
         pass
 
 
-
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_monitoring_events_type
+        ON monitoring_events (event_type)
+        """
+    )
     connection.commit()
     connection.close()
