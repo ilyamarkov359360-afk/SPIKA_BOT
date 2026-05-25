@@ -597,3 +597,20 @@ def mark_paid_access(
         amount=amount,
         provider=provider,
     )
+
+
+def mark_payment_paid(
+    telegram_id: int,
+    amount: int = 0,
+    provider: str = "test",
+):
+    """
+    Alias для старого payment_service.py.
+    Старый код ожидает функцию mark_payment_paid.
+    """
+
+    mark_paid_access(
+        telegram_id=telegram_id,
+        amount=amount,
+        provider=provider,
+    )
