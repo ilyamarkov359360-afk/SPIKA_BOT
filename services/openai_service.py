@@ -1,5 +1,10 @@
+import time
+
 from openai import OpenAI
+
 from config import OPENAI_API_KEY
+from database.monitoring_repository import log_monitoring_event
+
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -287,6 +292,7 @@ EXPERT_PROMPT = """
 Не делай категоричных выводов там, где данных недостаточно.
 """
 
+
 FINAL_VALUES_PROFILE_PROMPT = """
 ДИАГНОСТИЧЕСКАЯ СИСТЕМА: SPIKA Final Values Profile v1
 
@@ -396,6 +402,7 @@ FINAL_VALUES_PROFILE_PROMPT = """
 Не делай категоричных выводов там, где данных недостаточно.
 """
 
+
 CONSULTANT_PROMPT = """
 Ты — AI-Помощник маршрута в Telegram-боте диагностики типов мышления.
 
@@ -442,6 +449,56 @@ CONSULTANT_PROMPT = """
 Без markdown-таблиц.
 """
 
+
+def call_openai_with_retry(
+    messages: list[dict],
+    temperature: float = 0.2,
+    max_tokens: int = 1100,
+    attempts: int = 3,
+    event_type: str = "openai_error",
+    telegram_id: int | None = None,
+):
+    """
+    Выполняет запрос к OpenAI с retry.
+
+    Если OpenAI временно недоступен:
+    - делает до 3 попыток;
+    - логирует ошибку в monitoring_events;
+    - после последней ошибки пробрасывает исключение выше.
+    """
+
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+        except Exception as error:
+            last_error = error
+            error_text = str(error)
+
+            print(f"OpenAI attempt {attempt}/{attempts} failed: {error_text}")
+
+            try:
+                log_monitoring_event(
+                    event_type=event_type,
+                    telegram_id=telegram_id,
+                    details=f"attempt={attempt}; error={error_text}",
+                )
+            except Exception as monitoring_error:
+                print(f"Monitoring openai_error error: {monitoring_error}")
+
+            if attempt < attempts:
+                time.sleep(1.5 * attempt)
+
+    raise last_error
+
+
 def analyze_answer(question: dict, answer: str) -> str:
     user_content = (
         f"Вопрос: {question['q']}\n"
@@ -451,14 +508,15 @@ def analyze_answer(question: dict, answer: str) -> str:
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = call_openai_with_retry(
             messages=[
                 {"role": "system", "content": EXPERT_PROMPT},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.2,
             max_tokens=1100,
+            attempts=3,
+            event_type="openai_error",
         )
 
         return response.choices[0].message.content.strip()
@@ -474,8 +532,22 @@ def analyze_answer(question: dict, answer: str) -> str:
             "Расширенный анализ:\n"
             "Система не смогла получить ответ от AI-сервиса. "
             "Для корректной диагностики нужно повторить анализ позже или проверить настройки API.\n\n"
+            "Ценностная диагностика:\n"
+            "Ценностная диагностика временно недоступна из-за ошибки AI-сервиса.\n\n"
+            "Выявленные ценности:\n"
+            "явно не выявлены\n\n"
+            "Выявленные желания:\n"
+            "явно не выявлены\n\n"
+            "Выявленные важности:\n"
+            "явно не выявлены\n\n"
+            "Возможные противоречия:\n"
+            "данных недостаточно\n\n"
+            "Ответственность:\n"
+            "данных недостаточно\n\n"
+            "Перекладывание ответственности:\n"
+            "данных недостаточно\n\n"
             "Совет:\n"
-            "Проверьте OPENAI_API_KEY в файле .env и перезапустите бота."
+            "Проверьте OPENAI_API_KEY в Railway Variables или в локальном .env и повторите анализ."
         )
 
 
@@ -488,21 +560,21 @@ def ask_consultant(text: str, current_question: dict | None = None) -> str:
             f"Тип мышления: {current_question['type']}\n"
         )
 
+    user_content = (
+        f"{context}\n"
+        f"Вопрос пользователя: {text}"
+    )
+
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = call_openai_with_retry(
             messages=[
                 {"role": "system", "content": CONSULTANT_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"{context}\n"
-                        f"Вопрос пользователя: {text}"
-                    ),
-                },
+                {"role": "user", "content": user_content},
             ],
             temperature=0.4,
             max_tokens=300,
+            attempts=3,
+            event_type="openai_error",
         )
 
         return response.choices[0].message.content.strip()
@@ -512,8 +584,9 @@ def ask_consultant(text: str, current_question: dict | None = None) -> str:
 
         return (
             "AI-Консультант временно недоступен. "
-            "Проверьте OPENAI_API_KEY в файле .env и перезапустите бота."
+            "Проверьте OPENAI_API_KEY в Railway Variables или в локальном .env."
         )
+
 
 def build_final_values_profile(answers: list[dict]) -> str:
     """
@@ -541,7 +614,6 @@ def build_final_values_profile(answers: list[dict]) -> str:
             "явно не выявлено\n\n"
             "Ценностная формула:\n"
             "Данных недостаточно для формулы.\n\n"
-            "Пройдите маршрут полностью, чтобы получить точную ценностную диагностику.\n\n"
             "Краткий вывод для презентации:\n"
             "Данных недостаточно."
         )
@@ -572,14 +644,15 @@ def build_final_values_profile(answers: list[dict]) -> str:
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = call_openai_with_retry(
             messages=[
                 {"role": "system", "content": FINAL_VALUES_PROFILE_PROMPT},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.25,
             max_tokens=1400,
+            attempts=3,
+            event_type="openai_error",
         )
 
         return response.choices[0].message.content.strip()
@@ -606,10 +679,10 @@ def build_final_values_profile(answers: list[dict]) -> str:
             "данных недостаточно\n\n"
             "Ценностная формула:\n"
             "Данных недостаточно.\n\n"
-            "Проверьте OPENAI_API_KEY, VPN/регион подключения и повторите формирование отчёта.\n\n"
             "Краткий вывод для презентации:\n"
             "Итоговая ценностная диагностика временно недоступна."
         )
+
 
 def transcribe_audio(file_path: str) -> str:
     try:
@@ -624,7 +697,15 @@ def transcribe_audio(file_path: str) -> str:
     except Exception as error:
         print(f"OpenAI transcribe_audio error: {error}")
 
+        try:
+            log_monitoring_event(
+                event_type="openai_error",
+                details=f"transcribe_audio error={error}",
+            )
+        except Exception as monitoring_error:
+            print(f"Monitoring transcribe_audio error: {monitoring_error}")
+
         return (
             "Не удалось распознать голосовое сообщение. "
-            "Проверьте OPENAI_API_KEY в файле .env."
+            "Проверьте OPENAI_API_KEY в Railway Variables или в локальном .env."
         )
