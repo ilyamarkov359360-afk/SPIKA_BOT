@@ -48,7 +48,6 @@ def measure_event(
         yield
     finally:
         duration = time.perf_counter() - start_time
-
         log_monitoring_event(
             event_type=event_type,
             telegram_id=telegram_id,
@@ -70,12 +69,11 @@ def get_event_count(event_type: str) -> int:
         (event_type,),
     )
 
-    count = cursor.fetchone()[0]
-
+    value = cursor.fetchone()[0]
     cursor.close()
     connection.close()
 
-    return int(count or 0)
+    return int(value or 0)
 
 
 def get_avg_duration(event_type: str) -> float:
@@ -93,7 +91,6 @@ def get_avg_duration(event_type: str) -> float:
     )
 
     value = cursor.fetchone()[0]
-
     cursor.close()
     connection.close()
 
@@ -115,7 +112,28 @@ def get_max_duration(event_type: str) -> float:
     )
 
     value = cursor.fetchone()[0]
+    cursor.close()
+    connection.close()
 
+    return float(value or 0)
+
+
+def get_p95_duration(event_type: str) -> float:
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT percentile_cont(0.95)
+        WITHIN GROUP (ORDER BY duration_seconds)
+        FROM monitoring_events
+        WHERE event_type = %s
+          AND duration_seconds IS NOT NULL
+        """,
+        (event_type,),
+    )
+
+    value = cursor.fetchone()[0]
     cursor.close()
     connection.close()
 
@@ -127,12 +145,12 @@ def _get_count(sql: str, params: tuple = ()) -> int:
     cursor = connection.cursor()
 
     cursor.execute(sql, params)
-    count = cursor.fetchone()[0]
+    value = cursor.fetchone()[0]
 
     cursor.close()
     connection.close()
 
-    return int(count or 0)
+    return int(value or 0)
 
 
 def get_monitoring_stats() -> dict:
@@ -177,13 +195,17 @@ def get_monitoring_stats() -> dict:
 
         "answer_analysis_seconds_avg": get_avg_duration("answer_analysis"),
         "answer_analysis_seconds_max": get_max_duration("answer_analysis"),
+        "answer_analysis_seconds_p95": get_p95_duration("answer_analysis"),
 
         "pdf_generation_seconds_avg": get_avg_duration("pdf_generation"),
         "pdf_generation_seconds_max": get_max_duration("pdf_generation"),
+        "pdf_generation_seconds_p95": get_p95_duration("pdf_generation"),
 
         "ppt_generation_seconds_avg": get_avg_duration("ppt_generation"),
         "ppt_generation_seconds_max": get_max_duration("ppt_generation"),
+        "ppt_generation_seconds_p95": get_p95_duration("ppt_generation"),
 
         "final_profile_generation_seconds_avg": get_avg_duration("final_profile_generation"),
         "final_profile_generation_seconds_max": get_max_duration("final_profile_generation"),
+        "final_profile_generation_seconds_p95": get_p95_duration("final_profile_generation"),
     }

@@ -39,6 +39,7 @@ def metrics():
 
     for key, value in stats.items():
         metric_name = f"spika_{key}"
+
         lines.append(f"# HELP {metric_name} SPIKA metric: {key}")
         lines.append(f"# TYPE {metric_name} gauge")
         lines.append(f"{metric_name} {float(value)}")
