@@ -2,6 +2,24 @@ import asyncio
 import os
 import re
 
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart, Command
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    FSInputFile,
+)
+
+from config import TELEGRAM_TOKEN
+from data.questions import QUESTIONS
+from data.blocks import BLOCKS
+
 from database.db import init_database
 from database.repositories import (
     save_user,
@@ -16,30 +34,24 @@ from database.repositories import (
     get_latest_value_profile,
 )
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    FSInputFile,
+from database.monitoring_repository import (
+    log_monitoring_event,
+    measure_event,
 )
-from aiogram.filters import CommandStart, Command
 
-from config import TELEGRAM_TOKEN
-from data.questions import QUESTIONS
-from data.blocks import BLOCKS
 from services.openai_service import (
     analyze_answer,
     ask_consultant,
     transcribe_audio,
     build_final_values_profile,
 )
-from services.payment_service import is_paid, mark_paid, payment_text
+
+from services.payment_service import (
+    is_paid,
+    mark_paid,
+    payment_text,
+)
+
 from services.pdf_service import build_pdf_report
 from services.ppt_service import build_ppt_report
 
@@ -48,17 +60,52 @@ bot = Bot(
     token=TELEGRAM_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
+
 dp = Dispatcher()
 
 
-user_state = {}
-user_results = {}
-user_answers = {}
-user_mode = {}
+user_state: dict[int, int] = {}
+user_results: dict[int, dict] = {}
+user_answers: dict[int, list] = {}
+user_mode: dict[int, str] = {}
+
+
+def safe_log_event(
+    event_type: str,
+    telegram_id: int | None = None,
+    details: str = "",
+    duration_seconds: float | None = None,
+):
+    """
+    Безопасная запись события мониторинга.
+    Ошибка мониторинга не должна останавливать Telegram-бота.
+    """
+
+    try:
+        log_monitoring_event(
+            event_type=event_type,
+            telegram_id=telegram_id,
+            details=details,
+            duration_seconds=duration_seconds,
+        )
+    except Exception as error:
+        print(f"Monitoring {event_type} error: {error}")
+
+
+def ensure_user_memory(user_id: int):
+    """
+    Гарантирует наличие runtime-структур пользователя в памяти.
+    """
+
+    user_state.setdefault(user_id, 0)
+    user_results.setdefault(user_id, {})
+    user_answers.setdefault(user_id, [])
+    user_mode.setdefault(user_id, "survey")
+
 
 def load_user_runtime_data_if_needed(user_id: int) -> bool:
     """
-    Подгружает результаты и ответы пользователя из SQLite,
+    Подгружает результаты и ответы пользователя из PostgreSQL,
     если после перезапуска бота данные отсутствуют в памяти.
     """
 
@@ -75,6 +122,7 @@ def load_user_runtime_data_if_needed(user_id: int) -> bool:
     user_state[user_id] = len(answers)
 
     return True
+
 
 def extract_section(text: str, start_marker: str, end_markers: list[str]) -> str:
     if not text:
@@ -94,6 +142,7 @@ def extract_section(text: str, start_marker: str, end_markers: list[str]) -> str
             end_index = min(end_index, marker_index)
 
     return text[start_index:end_index].strip()
+
 
 def parse_final_values_profile(text: str) -> dict:
     summary_text = extract_section(
@@ -224,6 +273,7 @@ def parse_final_values_profile(text: str) -> dict:
         "raw_profile_text": text,
     }
 
+
 def generate_and_save_value_profile(user_id: int) -> dict:
     answers = user_answers.get(user_id, [])
 
@@ -251,12 +301,13 @@ def generate_and_save_value_profile(user_id: int) -> dict:
 
     return parsed_profile
 
+
 def parse_analysis(text: str) -> dict:
     score = 0
     presence = "НЕТ"
 
-    score_match = re.search(r"Оценка:\s*([0-9]+)", text)
-    result_match = re.search(r"Результат:\s*(ЕСТЬ|НЕТ)", text, re.IGNORECASE)
+    score_match = re.search(r"Оценка:\s*([0-9]+)", text or "")
+    result_match = re.search(r"Результат:\s*(ЕСТЬ|НЕТ)", text or "", re.IGNORECASE)
 
     if score_match:
         score = max(0, min(10, int(score_match.group(1))))
@@ -361,51 +412,22 @@ def parse_analysis(text: str) -> dict:
         [],
     )
 
-    if not short_analysis:
-        short_analysis = "Краткий анализ не сформирован."
-
-    if not full_analysis:
-        full_analysis = "Расширенный анализ не сформирован."
-
-    if not values_analysis:
-        values_analysis = "Ценностная диагностика не сформирована."
-
-    if not detected_values:
-        detected_values = "явно не выявлены"
-
-    if not detected_desires:
-        detected_desires = "явно не выявлены"
-
-    if not detected_importance:
-        detected_importance = "явно не выявлены"
-
-    if not contradictions:
-        contradictions = "явных противоречий не видно или данных недостаточно"
-
-    if not responsibility:
-        responsibility = "данных недостаточно"
-
-    if not responsibility_shift:
-        responsibility_shift = "явно не выявлено"
-
-    if not advice:
-        advice = "Совет не сформирован."
-
     return {
         "score": score,
         "presence": presence,
-        "short_analysis": short_analysis,
-        "full_analysis": full_analysis,
-        "values_analysis": values_analysis,
-        "detected_values": detected_values,
-        "detected_desires": detected_desires,
-        "detected_importance": detected_importance,
-        "contradictions": contradictions,
-        "responsibility": responsibility,
-        "responsibility_shift": responsibility_shift,
-        "advice": advice,
-        "raw_analysis": text,
+        "short_analysis": short_analysis or "Краткий анализ не сформирован.",
+        "full_analysis": full_analysis or "Расширенный анализ не сформирован.",
+        "values_analysis": values_analysis or "Ценностная диагностика не сформирована.",
+        "detected_values": detected_values or "явно не выявлены",
+        "detected_desires": detected_desires or "явно не выявлены",
+        "detected_importance": detected_importance or "явно не выявлены",
+        "contradictions": contradictions or "явных противоречий не видно или данных недостаточно",
+        "responsibility": responsibility or "данных недостаточно",
+        "responsibility_shift": responsibility_shift or "явно не выявлено",
+        "advice": advice or "Совет не сформирован.",
+        "raw_analysis": text or "",
     }
+
 
 def build_telegram_analysis_text(parsed: dict) -> str:
     return (
@@ -418,6 +440,7 @@ def build_telegram_analysis_text(parsed: dict) -> str:
         f"{parsed.get('advice', 'Совет не сформирован.')}"
     )
 
+
 def build_value_profile_ready_text(profile: dict) -> str:
     return (
         "🧭 <b>Ценностная карта собрана.</b>\n\n"
@@ -428,12 +451,11 @@ def build_value_profile_ready_text(profile: dict) -> str:
         "будет доступен в PDF и PowerPoint."
     )
 
+
 def main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(text="🚗 Начать маршрут"),
-            ],
+            [KeyboardButton(text="🚗 Начать маршрут")],
             [
                 KeyboardButton(text="❓ Подсказки маршрута"),
                 KeyboardButton(text="🧭 Помощник маршрута"),
@@ -446,22 +468,17 @@ def main_keyboard():
 def result_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(text="🗺 Карта результата"),
-            ],
+            [KeyboardButton(text="🗺 Карта результата")],
             [
                 KeyboardButton(text="📄 PDF-отчёт"),
                 KeyboardButton(text="📽 Презентация PPT"),
             ],
-            [
-                KeyboardButton(text="💳 Оплатить"),
-            ],
-            [
-                KeyboardButton(text="🚗 Начать маршрут"),
-            ],
+            [KeyboardButton(text="💳 Оплатить")],
+            [KeyboardButton(text="🚗 Начать маршрут")],
         ],
         resize_keyboard=True,
     )
+
 
 def resume_keyboard():
     return InlineKeyboardMarkup(
@@ -487,6 +504,7 @@ def resume_keyboard():
         ]
     )
 
+
 def payment_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -503,21 +521,6 @@ def payment_keyboard():
                 )
             ],
         ]
-    )
-
-
-def continue_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="➡️ Следующий вопрос"),
-            ],
-            [
-                KeyboardButton(text="❓ Подсказки маршрута"),
-                KeyboardButton(text="🧭 Помощник маршрута"),
-            ],
-        ],
-        resize_keyboard=True,
     )
 
 
@@ -635,19 +638,21 @@ async def start(message: Message):
         last_name=message.from_user.last_name,
     )
 
+    safe_log_event("user_started", telegram_id=user_id)
+
     active_session = get_active_session(user_id)
     finished_session = get_latest_finished_session(user_id)
 
     greeting_text = (
-    "<b>🚗 Добро пожаловать в Город Мышления.</b>\n\n"
-    "Это не обычный тест, а маршрут по разным районам твоего мышления.\n\n"
-    "Сначала ты посмотришь на карту целей и мотивации, затем проедешь по улицам настоящего, "
-    "остановишься у зданий прошлого опыта, выедешь на дорогу будущего, встретишь людей, "
-    "зайдёшь в рабочее пространство проектов и попадёшь в необычный район нестандартных решений.\n\n"
-    "На каждом этапе ты отвечаешь на вопросы, а AI даёт краткий анализ и совет. "
-    "В конце маршрута ты получишь PDF и PowerPoint-отчёт с полной диагностикой.\n\n"
-    "Нажми «🚗 Начать маршрут», чтобы выехать на первую улицу."
-)
+        "<b>🚗 Добро пожаловать в Город Мышления.</b>\n\n"
+        "Это не обычный тест, а маршрут по разным районам твоего мышления.\n\n"
+        "Сначала ты посмотришь на карту целей и мотивации, затем проедешь по улицам настоящего, "
+        "остановишься у зданий прошлого опыта, выедешь на дорогу будущего, встретишь людей, "
+        "зайдёшь в рабочее пространство проектов и попадёшь в необычный район нестандартных решений.\n\n"
+        "На каждом этапе ты отвечаешь на вопросы, а AI даёт краткий анализ и совет. "
+        "В конце маршрута ты получишь PDF и PowerPoint-отчёт с полной диагностикой.\n\n"
+        "Нажми «🚗 Начать маршрут», чтобы выехать на первую улицу."
+    )
 
     await message.answer(
         greeting_text,
@@ -676,8 +681,9 @@ async def start(message: Message):
         return
 
     await message.answer(
-    "Нажми «🚗 Начать маршрут», чтобы начать движение по Городу Мышления.",
+        "Нажми «🚗 Начать маршрут», чтобы начать движение по Городу Мышления."
     )
+
 
 @dp.callback_query(F.data == "resume_survey")
 async def resume_survey(call: CallbackQuery):
@@ -713,12 +719,10 @@ async def resume_survey(call: CallbackQuery):
     user_answers[user_id] = answers
     user_mode[user_id] = "survey"
 
-    await call.message.answer(
-        "▶️ Продолжаем маршрут с места остановки."
-    )
-
+    await call.message.answer("▶️ Продолжаем маршрут с места остановки.")
     await send_question(call.message, user_id)
     await call.answer()
+
 
 @dp.callback_query(F.data == "restart_survey")
 async def restart_survey(call: CallbackQuery):
@@ -741,12 +745,12 @@ async def restart_survey(call: CallbackQuery):
     user_answers[user_id] = []
     user_mode[user_id] = "survey"
 
-    await call.message.answer(
-        "🔁 Начинаем маршрут заново. Поехали!"
-    )
+    safe_log_event("session_started", telegram_id=user_id, details="restart")
 
+    await call.message.answer("🔁 Начинаем маршрут заново. Поехали!")
     await send_question(call.message, user_id)
     await call.answer()
+
 
 @dp.message(Command("test"))
 async def test(message: Message):
@@ -767,6 +771,9 @@ async def test(message: Message):
     user_state[user_id] = len(QUESTIONS)
     user_results[user_id] = {}
     user_answers[user_id] = []
+    user_mode[user_id] = "survey"
+
+    safe_log_event("session_started", telegram_id=user_id, details="test_data")
 
     missing_types = {
         "Мышление масштаба",
@@ -785,7 +792,7 @@ async def test(message: Message):
             f"Тестовый ответ пользователя на вопрос {index}. "
             f"Пользователь описывает свой опыт, логику, примеры, выводы и связь "
             f"с типом мышления «{q['type']}». Ответ нужен для проверки PDF, "
-            f"PowerPoint, SQLite и итоговой диагностики."
+            f"PowerPoint, PostgreSQL и итоговой диагностики."
         )
 
         short_analysis = (
@@ -858,26 +865,26 @@ async def test(message: Message):
             "presence": presence,
         }
 
-        user_answers[user_id].append(
-            {
-                "block_id": q["block_id"],
-                "type": q["type"],
-                "question": q["q"],
-                "answer": answer_text,
-                "analysis": short_analysis,
-                "full_analysis": full_analysis,
-                "values_analysis": values_analysis,
-                "detected_values": detected_values,
-                "detected_desires": detected_desires,
-                "detected_importance": detected_importance,
-                "contradictions": contradictions,
-                "responsibility": responsibility,
-                "responsibility_shift": responsibility_shift,
-                "advice": advice,
-                "score": score,
-                "presence": presence,
-            }
-        )
+        answer_data = {
+            "block_id": q["block_id"],
+            "type": q["type"],
+            "question": q["q"],
+            "answer": answer_text,
+            "analysis": short_analysis,
+            "full_analysis": full_analysis,
+            "values_analysis": values_analysis,
+            "detected_values": detected_values,
+            "detected_desires": detected_desires,
+            "detected_importance": detected_importance,
+            "contradictions": contradictions,
+            "responsibility": responsibility,
+            "responsibility_shift": responsibility_shift,
+            "advice": advice,
+            "score": score,
+            "presence": presence,
+        }
+
+        user_answers[user_id].append(answer_data)
 
         save_answer(
             telegram_id=user_id,
@@ -900,13 +907,24 @@ async def test(message: Message):
             responsibility_shift_text=responsibility_shift,
         )
 
+        safe_log_event(
+            "answer_processed",
+            telegram_id=user_id,
+            details=f"test_question={index}",
+        )
+
     update_session_progress(
         telegram_id=user_id,
         current_question=len(QUESTIONS),
         status="finished",
     )
 
-    value_profile = generate_and_save_value_profile(user_id)
+    safe_log_event("survey_finished", telegram_id=user_id, details="test_data")
+
+    with measure_event("final_profile_generation", telegram_id=user_id):
+        value_profile = generate_and_save_value_profile(user_id)
+
+    safe_log_event("value_profile_generated", telegram_id=user_id, details="test_data")
 
     await message.answer(
         "✅ Тестовые данные созданы для 43 вопросов.\n\n"
@@ -977,6 +995,7 @@ async def payment_confirmed(call: CallbackQuery):
         return
 
     mark_paid(user_id)
+    safe_log_event("payment_confirmed", telegram_id=user_id)
 
     await call.message.answer(
         "✅ Тестовая оплата подтверждена.\n\n"
@@ -1009,7 +1028,7 @@ async def short_result(call: CallbackQuery):
     await call.answer()
 
 
-@dp.message(F.text == "📄 PDF")
+@dp.message(F.text.in_({"📄 PDF", "📄 PDF-отчёт"}))
 async def pdf_message(message: Message):
     await send_pdf(message)
 
@@ -1040,24 +1059,38 @@ async def send_pdf(message: Message, user_id: int | None = None):
         )
         return
 
-    path = build_pdf_report(
-        user_id,
-        user_results.get(user_id, {}),
-        user_answers.get(user_id, []),
-    )
+    try:
+        with measure_event("pdf_generation", telegram_id=user_id):
+            path = build_pdf_report(
+                user_id,
+                user_results.get(user_id, {}),
+                user_answers.get(user_id, []),
+            )
 
-    save_report(
-        telegram_id=user_id,
-        report_type="pdf",
-        file_path=path,
-    )
+        save_report(
+            telegram_id=user_id,
+            report_type="pdf",
+            file_path=path,
+        )
 
-    await message.answer_document(
-        FSInputFile(path),
-        caption="📄 Ваш PDF-отчёт готов.",
-    )
+        safe_log_event("pdf_generated", telegram_id=user_id)
 
-@dp.message(F.text == "📽 PowerPoint")
+        await message.answer_document(
+            FSInputFile(path),
+            caption="📄 Ваш PDF-отчёт готов.",
+        )
+
+    except Exception as error:
+        safe_log_event("pdf_error", telegram_id=user_id, details=str(error))
+        print(f"PDF generation error: {error}")
+
+        await message.answer(
+            "📄 Не удалось сформировать PDF-отчёт. "
+            "Ошибка записана в мониторинг."
+        )
+
+
+@dp.message(F.text.in_({"📽 PowerPoint", "📽 Презентация PPT"}))
 async def ppt_message(message: Message):
     await send_ppt(message)
 
@@ -1088,36 +1121,53 @@ async def send_ppt(message: Message, user_id: int | None = None):
         )
         return
 
-    path = build_ppt_report(
-        user_id,
-        user_results.get(user_id, {}),
-        user_answers.get(user_id, []),
-    )
+    try:
+        with measure_event("ppt_generation", telegram_id=user_id):
+            path = build_ppt_report(
+                user_id,
+                user_results.get(user_id, {}),
+                user_answers.get(user_id, []),
+            )
 
-    save_report(
-        telegram_id=user_id,
-        report_type="ppt",
-        file_path=path,
-    )
+        save_report(
+            telegram_id=user_id,
+            report_type="ppt",
+            file_path=path,
+        )
 
-    await message.answer_document(
-        FSInputFile(path),
-        caption="📽 Ваш PowerPoint-отчёт готов.",
-    )
+        safe_log_event("ppt_generated", telegram_id=user_id)
+
+        await message.answer_document(
+            FSInputFile(path),
+            caption="📽 Ваш PowerPoint-отчёт готов.",
+        )
+
+    except Exception as error:
+        safe_log_event("ppt_error", telegram_id=user_id, details=str(error))
+        print(f"PPT generation error: {error}")
+
+        await message.answer(
+            "📽 Не удалось сформировать PowerPoint-отчёт. "
+            "Ошибка записана в мониторинг."
+        )
+
 
 @dp.callback_query(F.data == "consultant")
 async def consultant_callback(call: CallbackQuery):
     user_mode[call.from_user.id] = "consultant"
+
     await call.message.answer(
         "🧭 <b>Помощник маршрута рядом.</b>\n\n"
         "Задай вопрос по текущему заданию или формату ответа."
     )
+
     await call.answer()
 
 
-@dp.message(F.text.in_({"🤖 AI-Консультант", "🧭 Помощник маршрута"}))
+@dp.message(F.text.in_({"🤖 AI-Консультант", "🤖 Помощник маршрута", "🧭 Помощник маршрута"}))
 async def consultant_message_start(message: Message):
     user_mode[message.from_user.id] = "consultant"
+
     await message.answer(
         "🧭 <b>Помощник маршрута рядом.</b>\n\n"
         "Задай вопрос по текущему заданию, формату ответа или смыслу вопроса. "
@@ -1132,6 +1182,7 @@ async def handle_voice(message: Message):
 
     file = await bot.get_file(message.voice.file_id)
     path = f"storage/temp/{message.voice.file_unique_id}.ogg"
+
     await bot.download_file(file.file_path, path)
 
     try:
@@ -1154,11 +1205,6 @@ async def handle_voice(message: Message):
 
     await process_survey_answer(message, text)
 
-
-@dp.callback_query(F.data == "next_question")
-async def next_question(call: CallbackQuery):
-    await send_question(call.message, call.from_user.id)
-    await call.answer()
 
 async def begin_survey_flow(message: Message):
     user_id = message.from_user.id
@@ -1195,12 +1241,16 @@ async def begin_survey_flow(message: Message):
     user_answers[user_id] = []
     user_mode[user_id] = "survey"
 
+    safe_log_event("session_started", telegram_id=user_id)
+
     await message.answer(
         "🚗 <b>Маршрут начинается.</b>\n\n"
         "Ты выезжаешь на первую улицу Города Мышления. "
         "Сейчас мы откроем карту твоей мотивации, целей и внутренней опоры."
     )
+
     await send_question(message, user_id)
+
 
 @dp.message(F.text.in_({"🧠 Начать опрос", "🚗 Начать маршрут"}))
 async def start_survey_button(message: Message):
@@ -1214,10 +1264,6 @@ async def handle_text(message: Message):
 
     if text in {"🧠 Начать опрос", "🚗 Начать маршрут"}:
         await begin_survey_flow(message)
-        return
-
-    if text in {"➡️ Следующий вопрос", "▶️ Следующий вопрос", "Следующий вопрос"}:
-        await send_question(message, user_id)
         return
 
     if text in {"❓ FAQ", "❓ Подсказки маршрута"}:
@@ -1269,14 +1315,6 @@ async def handle_text(message: Message):
         user_mode[user_id] = "survey"
         return
 
-    if user_mode.get(user_id) == "waiting_next":
-        await message.answer(
-            "🚦 Мы уже разобрали предыдущий ответ.\n\n"
-            "Чтобы продолжить маршрут, нажмите «➡️ Следующий вопрос».",
-            reply_markup=continue_keyboard(),
-        )
-        return
-
     await process_survey_answer(message, text)
 
 
@@ -1287,6 +1325,8 @@ async def process_survey_answer(message: Message, text: str):
         await message.answer("Нажмите «🚗 Начать маршрут» или /start.")
         return
 
+    ensure_user_memory(user_id)
+
     idx = user_state[user_id]
 
     if idx >= len(QUESTIONS):
@@ -1295,13 +1335,22 @@ async def process_survey_answer(message: Message, text: str):
 
     question = QUESTIONS[idx]
 
+    safe_log_event(
+        "answer_received",
+        telegram_id=user_id,
+        details=f"question_index={idx + 1}",
+    )
+
     await message.answer("⏳ Анализирую ответ...")
 
     try:
-        analysis = analyze_answer(question, text)
-    except Exception:
+        with measure_event("answer_analysis", telegram_id=user_id):
+            analysis = analyze_answer(question, text)
+    except Exception as error:
+        safe_log_event("openai_error", telegram_id=user_id, details=str(error))
+
         analysis = (
-             "Оценка: 0\n"
+            "Оценка: 0\n"
             "Результат: НЕТ\n\n"
             "Краткий анализ:\n"
             "AI-анализ временно недоступен. Ответ не был оценён автоматически.\n\n"
@@ -1327,7 +1376,7 @@ async def process_survey_answer(message: Message, text: str):
         )
 
     parsed = parse_analysis(analysis)
-    
+
     short_analysis = parsed.get("short_analysis", "")
     full_analysis = parsed.get("full_analysis", "")
     values_analysis = parsed.get("values_analysis", "")
@@ -1338,7 +1387,7 @@ async def process_survey_answer(message: Message, text: str):
     responsibility = parsed.get("responsibility", "")
     responsibility_shift = parsed.get("responsibility_shift", "")
     advice = parsed.get("advice", "")
-    
+
     user_results[user_id][question["type"]] = {
         "score": parsed["score"],
         "presence": parsed["presence"],
@@ -1387,29 +1436,34 @@ async def process_survey_answer(message: Message, text: str):
         responsibility_shift_text=responsibility_shift,
     )
 
-    user_state[user_id] += 1
+    safe_log_event(
+        "answer_processed",
+        telegram_id=user_id,
+        details=f"question_index={idx + 1}; score={parsed['score']}",
+    )
 
+    user_state[user_id] += 1
     new_index = user_state[user_id]
+
+    await message.answer(build_telegram_analysis_text(parsed))
 
     if new_index >= len(QUESTIONS):
         update_session_progress(
-        telegram_id=user_id,
-        current_question=new_index,
-        status="finished",
+            telegram_id=user_id,
+            current_question=new_index,
+            status="finished",
         )
 
-        await message.answer(
-        build_telegram_analysis_text(parsed)
-        )
+        safe_log_event("survey_finished", telegram_id=user_id)
 
         await message.answer("🧭 Собираю итоговую ценностную карту по всем ответам...")
 
-        value_profile = generate_and_save_value_profile(user_id)
+        with measure_event("final_profile_generation", telegram_id=user_id):
+            value_profile = generate_and_save_value_profile(user_id)
 
-        await message.answer(
-        build_value_profile_ready_text(value_profile)
-        )
+        safe_log_event("value_profile_generated", telegram_id=user_id)
 
+        await message.answer(build_value_profile_ready_text(value_profile))
         await send_final_message(message, user_id)
         return
 
@@ -1419,20 +1473,16 @@ async def process_survey_answer(message: Message, text: str):
         status="active",
     )
 
-    user_mode[user_id] = "waiting_next"
-
-    await message.answer(
-        build_telegram_analysis_text(parsed),
-        reply_markup=continue_keyboard(),
-    )
+    await send_question(message, user_id)
 
 
 async def main():
     init_database()
-
     print("DATABASE INITIALIZED")
-    print("BOT NEW STARTED")
 
+    safe_log_event("bot_started")
+
+    print("BOT NEW STARTED")
     await dp.start_polling(bot)
 
 
