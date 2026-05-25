@@ -1,5 +1,5 @@
 aiogram==3.28.2
-openai==2.36.0
+openai==2.38.0
 python-dotenv==1.2.2
 
 psycopg[binary,pool]==3.3.4

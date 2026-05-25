@@ -571,3 +571,29 @@ def get_value_profiles_total() -> int:
     connection.close()
 
     return int(count or 0)
+
+def has_paid_access(telegram_id: int) -> bool:
+    """
+    Проверяет, есть ли у пользователя оплаченный доступ.
+    Совместимость со старым payment_service.py.
+    """
+
+    return has_confirmed_payment(telegram_id)
+
+
+def mark_paid_access(
+    telegram_id: int,
+    amount: int = 0,
+    provider: str = "test",
+):
+    """
+    Отмечает пользователя как оплатившего.
+    Совместимость со старым payment_service.py.
+    """
+
+    save_payment(
+        telegram_id=telegram_id,
+        status="confirmed",
+        amount=amount,
+        provider=provider,
+    )
