@@ -6,6 +6,8 @@ from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 
+from database.repositories import get_latest_value_profile
+
 
 REPORTS_DIR = Path("storage/reports")
 
@@ -95,6 +97,16 @@ def _safe_text(value) -> str:
         "⏳": "",
         "🔥": "",
         "🎯": "",
+        "🧭": "",
+        "🗺": "",
+        "🔒": "",
+        "▶️": "",
+        "🔁": "",
+        "🚦": "",
+        "—": "-",
+        "–": "-",
+        "\u00a0": " ",
+        "\u200b": "",
     }
 
     for old, new in replacements.items():
@@ -155,6 +167,10 @@ def _missing_types(results: dict) -> list[str]:
     ]
 
 
+def _blank_slide(prs):
+    return prs.slides.add_slide(prs.slide_layouts[6])
+
+
 def _add_title(slide, title: str):
     title_box = slide.shapes.add_textbox(
         Inches(0.7),
@@ -210,7 +226,12 @@ def _add_body_text(
     frame.word_wrap = True
     frame.clear()
 
-    for index, line in enumerate(_safe_text(text).split("\n")):
+    lines = _safe_text(text).split("\n")
+
+    if not lines:
+        lines = [""]
+
+    for index, line in enumerate(lines):
         if index == 0:
             p = frame.paragraphs[0]
         else:
@@ -224,7 +245,7 @@ def _add_body_text(
     return box
 
 
-def _add_footer(slide, page_text: str = "SPIKA | Диагностика типов мышления"):
+def _add_footer(slide, page_text: str = "SPIKA | Диагностика типов мышления и ценностей"):
     box = slide.shapes.add_textbox(
         Inches(0.7),
         Inches(6.95),
@@ -272,10 +293,6 @@ def _add_stat_box(slide, x, y, title, value):
     p2.alignment = PP_ALIGN.CENTER
 
 
-def _blank_slide(prs):
-    return prs.slides.add_slide(prs.slide_layouts[6])
-
-
 def _group_answers_by_block(answers: list[dict]) -> dict:
     grouped = {
         block_id: []
@@ -291,22 +308,149 @@ def _group_answers_by_block(answers: list[dict]) -> dict:
     return grouped
 
 
-def _build_block_results_from_answers(answers: list[dict]) -> dict:
-    grouped = {
-        block_id: []
-        for block_id in BLOCK_ORDER
-    }
+def _diagnostic_summary_text(summary: dict) -> str:
+    if summary["total"] == 0:
+        return (
+            "Диагностика пока не сформирована. Нужно пройти вопросы, "
+            "чтобы получить карту типов мышления."
+        )
 
-    for item in answers:
-        block_id = item.get("block_id")
+    if summary["found"] >= max(1, summary["total"] * 0.7):
+        return (
+            "Ответы показывают широкий спектр проявленных типов мышления. "
+            "Пользователь уверенно раскрывает логику, опыт, решения и выводы."
+        )
 
-        if block_id in grouped:
-            grouped[block_id].append(item)
+    if summary["found"] >= max(1, summary["total"] * 0.4):
+        return (
+            "Есть выраженная база мышления и несколько сильных зон. "
+            "Часть направлений требует дополнительной конкретики и практики."
+        )
 
-    return grouped
+    return (
+        "Пока раскрыта только часть типов мышления. Для лучшего результата "
+        "нужно больше примеров, действий, решений и личных выводов."
+    )
+
+
+def _add_value_profile_slides(prs, value_profile: dict | None):
+    slide = _blank_slide(prs)
+
+    _add_title(slide, "Карта ценностей пользователя")
+
+    if not value_profile:
+        _add_body_text(
+            slide,
+            "Итоговая ценностная характеристика пока не сформирована.",
+            top=1.7,
+            font_size=16,
+        )
+        _add_footer(slide)
+        return
+
+    summary_text = value_profile.get("summary_text", "")
+    key_values_text = value_profile.get("key_values_text", "")
+    probable_values_text = value_profile.get("probable_values_text", "")
+    desires_text = value_profile.get("desires_text", "")
+    importance_text = value_profile.get("importance_text", "")
+    contradictions_text = value_profile.get("contradictions_text", "")
+    responsibility_text = value_profile.get("responsibility_text", "")
+    responsibility_shift_text = value_profile.get("responsibility_shift_text", "")
+    value_formula_text = value_profile.get("value_formula_text", "")
+    presentation_summary_text = value_profile.get("presentation_summary_text", "")
+
+    _add_subtitle(slide, "Итоговая ценностная характеристика")
+
+    body = (
+        f"{_shorten(summary_text, 900)}\n\n"
+        f"Ценностная формула:\n"
+        f"{_shorten(value_formula_text, 350)}"
+    )
+
+    _add_body_text(
+        slide,
+        body,
+        top=1.75,
+        height=5.1,
+        font_size=13,
+    )
+
+    _add_footer(slide)
+
+    slide = _blank_slide(prs)
+
+    _add_title(slide, "Ведущие и вероятные ценности")
+    _add_subtitle(slide, "Что повторяется в ответах пользователя")
+
+    body = (
+        f"Ведущие ценности:\n"
+        f"{_shorten(key_values_text, 950)}\n\n"
+        f"Вероятные ценности:\n"
+        f"{_shorten(probable_values_text, 550)}"
+    )
+
+    _add_body_text(
+        slide,
+        body,
+        top=1.65,
+        height=5.25,
+        font_size=12,
+    )
+
+    _add_footer(slide)
+
+    slide = _blank_slide(prs)
+
+    _add_title(slide, "Желания, важности и ответственность")
+    _add_subtitle(slide, "Как ценности связаны с действиями")
+
+    body = (
+        f"Желания и цели:\n"
+        f"{_shorten(desires_text, 550)}\n\n"
+        f"Важности:\n"
+        f"{_shorten(importance_text, 550)}\n\n"
+        f"Ответственность:\n"
+        f"{_shorten(responsibility_text, 450)}"
+    )
+
+    _add_body_text(
+        slide,
+        body,
+        top=1.65,
+        height=5.25,
+        font_size=11,
+    )
+
+    _add_footer(slide)
+
+    slide = _blank_slide(prs)
+
+    _add_title(slide, "Противоречия и перекладывание ответственности")
+    _add_subtitle(slide, "Где могут быть зоны внимания")
+
+    body = (
+        f"Противоречия:\n"
+        f"{_shorten(contradictions_text, 700)}\n\n"
+        f"Перекладывание ответственности:\n"
+        f"{_shorten(responsibility_shift_text, 600)}\n\n"
+        f"Краткий вывод для презентации:\n"
+        f"{_shorten(presentation_summary_text, 450)}"
+    )
+
+    _add_body_text(
+        slide,
+        body,
+        top=1.65,
+        height=5.25,
+        font_size=11,
+    )
+
+    _add_footer(slide)
 
 
 def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
+    value_profile = get_latest_value_profile(user_id)
+
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     file_path = REPORTS_DIR / f"report_{user_id}.pptx"
@@ -319,14 +463,14 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
     found = _found_types(results)
     missing = _missing_types(results)
 
-    # SLIDE 1 — TITLE
+    # SLIDE 1 - TITLE
     slide = _blank_slide(prs)
 
     _add_title(slide, "Путешествие по Городу Мышления")
 
     _add_subtitle(
         slide,
-        "Итоговая презентация по диагностике типов мышления",
+        "Итоговая презентация по диагностике типов мышления и ценностей",
     )
 
     _add_body_text(
@@ -336,7 +480,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
             "от базовых целей и мотивации до нестандартных видов мышления.\n\n"
             "Пользователь проходит город своего мышления, встречает разные "
             "ситуации, анализирует опыт, принимает решения и получает карту "
-            "сильных сторон и зон развития."
+            "сильных сторон, зон развития и ценностных ориентиров."
         ),
         top=2.0,
         font_size=18,
@@ -352,7 +496,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     _add_footer(slide)
 
-    # SLIDE 2 — ROUTE
+    # SLIDE 2 - ROUTE
     slide = _blank_slide(prs)
 
     _add_title(slide, "Маршрут диагностики")
@@ -364,7 +508,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
             "2. Посадка в машину: выбор направления и старт маршрута.\n"
             "3. Движение по районам города: блоки вопросов.\n"
             "4. Встречи и остановки: анализ опыта, людей, проектов и решений.\n"
-            "5. Заход в помещение: получение результатов и диагностики.\n"
+            "5. Заход в помещение: получение результатов и ценностной диагностики.\n"
             "6. Возвращение на улицу: новый взгляд на себя и своё мышление."
         ),
         top=1.55,
@@ -373,7 +517,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     _add_footer(slide)
 
-    # SLIDE 3 — SUMMARY
+    # SLIDE 3 - SUMMARY
     slide = _blank_slide(prs)
 
     _add_title(slide, "Сводка результата")
@@ -389,38 +533,17 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
         font_size=20,
     )
 
-    if summary["total"] == 0:
-        diagnostic = (
-            "Диагностика пока не сформирована. Нужно пройти вопросы, "
-            "чтобы получить карту типов мышления."
-        )
-    elif summary["found"] >= max(1, summary["total"] * 0.7):
-        diagnostic = (
-            "Ответы показывают широкий спектр проявленных типов мышления. "
-            "Пользователь уверенно раскрывает логику, опыт, решения и выводы."
-        )
-    elif summary["found"] >= max(1, summary["total"] * 0.4):
-        diagnostic = (
-            "Есть выраженная база мышления и несколько сильных зон. "
-            "Часть направлений требует дополнительной конкретики и практики."
-        )
-    else:
-        diagnostic = (
-            "Пока раскрыта только часть типов мышления. Для лучшего результата "
-            "нужно больше примеров, действий, решений и личных выводов."
-        )
-
     _add_body_text(
         slide,
-        diagnostic,
+        _diagnostic_summary_text(summary),
         top=3.7,
         font_size=16,
     )
 
     _add_footer(slide)
 
-    # SLIDE 4 — BLOCK RESULTS
-    block_results = _build_block_results_from_answers(answers)
+    # BLOCK RESULTS
+    block_results = _group_answers_by_block(answers)
 
     for block_id in BLOCK_ORDER:
         block_items = block_results.get(block_id, [])
@@ -444,7 +567,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
             score = item.get("score", 0)
             presence = item.get("presence", "НЕТ")
             marker = "+" if presence == "ЕСТЬ" else "-"
-            lines.append(f"{marker} {type_name} — {score}/10")
+            lines.append(f"{marker} {type_name} - {score}/10")
 
         text = "\n".join(lines[:12])
 
@@ -457,14 +580,14 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
         _add_footer(slide)
 
-    # SLIDE — STRONG SIDES
+    # STRONG SIDES
     slide = _blank_slide(prs)
 
     _add_title(slide, "Сильные стороны")
 
     if found:
         found_text = "\n".join(
-            f"+ {type_name} — {results[type_name].get('score', 0)}/10"
+            f"+ {type_name} - {results[type_name].get('score', 0)}/10"
             for type_name in found[:18]
         )
     else:
@@ -482,14 +605,14 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     _add_footer(slide)
 
-    # SLIDE — DEVELOPMENT ZONES
+    # DEVELOPMENT ZONES
     slide = _blank_slide(prs)
 
     _add_title(slide, "Зоны развития")
 
     if missing:
         missing_text = "\n".join(
-            f"- {type_name} — {results[type_name].get('score', 0)}/10"
+            f"- {type_name} - {results[type_name].get('score', 0)}/10"
             for type_name in missing[:18]
         )
     else:
@@ -507,7 +630,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     _add_footer(slide)
 
-           # ANSWER ANALYSIS SLIDES
+    # ANSWER ANALYSIS SLIDES
     if answers:
         for index, item in enumerate(answers, start=1):
             thinking_type = _safe_text(item.get("type", ""))
@@ -614,7 +737,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
                 f"Ответственность:\n"
                 f"{_shorten(responsibility, 280)}\n\n"
                 f"Перекладывание ответственности:\n"
-                f"{_shorten(responsibility_shift, 240)}\n\n"
+                f"{_shorten(responsibility_shift, 240)}"
             )
 
             _add_body_text(
@@ -626,7 +749,10 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
             )
 
             _add_footer(slide)
-    
+
+    # VALUE PROFILE
+    _add_value_profile_slides(prs, value_profile)
+
     # RECOMMENDATIONS
     slide = _blank_slide(prs)
 
@@ -636,8 +762,8 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
         "1. Отвечать через реальные ситуации: что произошло, что было сделано, какой вывод появился.\n"
         "2. Для зон развития выбрать 1-2 типа мышления и тренировать их через практические задачи.\n"
         "3. Использовать сильные стороны как опору для проектов, общения, решений и планирования.\n"
-        "4. Возвращаться к диагностике после обучения или практики, чтобы увидеть динамику.\n"
-        "5. Смотреть на отчёт как на карту маршрута: сильные зоны показывают опору, зоны развития — направление движения."
+        "4. Отдельно возвращаться к карте ценностей: что повторяется, что важно, где есть противоречия.\n"
+        "5. Смотреть на отчёт как на карту маршрута: сильные зоны показывают опору, зоны развития - направление движения."
     )
 
     _add_body_text(
@@ -688,7 +814,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
         font_size=18,
     )
 
-    _add_footer(slide, "Конец маршрута — начало нового понимания")
+    _add_footer(slide, "Конец маршрута - начало нового понимания")
 
     prs.save(file_path)
 
