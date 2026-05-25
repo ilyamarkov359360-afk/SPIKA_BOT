@@ -1,0 +1,70 @@
+# =========================
+# Python cache
+# =========================
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+
+# =========================
+# Virtual environment
+# =========================
+.venv/
+venv/
+env/
+
+# =========================
+# Environment variables / secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# SQLite database
+# =========================
+storage/database.sqlite3
+*.sqlite3
+*.db
+
+# =========================
+# Temporary files
+# =========================
+storage/temp/
+tmp/
+temp/
+
+# =========================
+# Generated reports
+# =========================
+storage/reports/
+*.pdf
+*.pptx
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# VS Code local settings
+# =========================
+.vscode/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Build / test cache
+# =========================
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
