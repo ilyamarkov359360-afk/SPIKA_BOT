@@ -123,6 +123,11 @@ def _shorten(text: str, limit: int = 650) -> str:
 
     return text[:limit].rstrip() + "..."
 
+def _presence_label(value: str) -> str:
+    if value == "ЕСТЬ":
+        return "ЕСТЬ"
+
+    return "Есть что проращивать"
 
 def _calculate_summary(results: dict) -> dict:
     total = len(results)
@@ -565,8 +570,8 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
         for item in block_items:
             type_name = item.get("type", "")
             score = item.get("score", 0)
-            presence = item.get("presence", "НЕТ")
-            marker = "+" if presence == "ЕСТЬ" else "-"
+            presence = _presence_label(item.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"))
+            marker = "+" if presence == "ЕСТЬ" else "🌱"
             lines.append(f"{marker} {type_name} - {score}/10")
 
         text = "\n".join(lines[:12])
@@ -678,7 +683,7 @@ def build_ppt_report(user_id: int, results: dict, answers: list[dict]) -> str:
             )
 
             score = item.get("score", 0)
-            presence = item.get("presence", "НЕТ")
+            presence = _presence_label(item.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"))
 
             # Slide 1: thinking analysis
             slide = _blank_slide(prs)

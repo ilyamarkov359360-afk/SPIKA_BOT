@@ -304,10 +304,15 @@ def generate_and_save_value_profile(user_id: int) -> dict:
 
 def parse_analysis(text: str) -> dict:
     score = 0
-    presence = "НЕТ"
+    presence = "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"
 
     score_match = re.search(r"Оценка:\s*([0-9]+)", text or "")
-    result_match = re.search(r"Результат:\s*(ЕСТЬ|НЕТ)", text or "", re.IGNORECASE)
+    
+    result_match = re.search(
+        r"Результат:\s*(ЕСТЬ|ЕСТЬ ЧТО ПРОРАЩИВАТЬ)",
+        text or "",
+        re.IGNORECASE,
+    )
 
     if score_match:
         score = max(0, min(10, int(score_match.group(1))))
@@ -315,7 +320,7 @@ def parse_analysis(text: str) -> dict:
     if result_match:
         presence = result_match.group(1).upper()
 
-    presence = "ЕСТЬ" if score >= 8 else "НЕТ"
+    presence = "ЕСТЬ" if score >= 7 else "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"
 
     short_analysis = extract_section(
         text,
@@ -430,10 +435,16 @@ def parse_analysis(text: str) -> dict:
 
 
 def build_telegram_analysis_text(parsed: dict) -> str:
+
+    result_label = parsed.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ!")
+
+    if result_label != "ЕСТЬ":
+        result_label = "Есть что проращивать!"
+
     return (
         "🧭 <b>Краткий разбор</b>\n\n"
         f"<b>Оценка:</b> {parsed.get('score', 0)}/10\n"
-        f"<b>Результат:</b> {parsed.get('presence', 'НЕТ')}\n\n"
+        f"<b>Наличие типа мышления:</b> {result_label}\n\n"
         f"<b>Что видно по ответу:</b>\n"
         f"{parsed.get('short_analysis', 'Краткий анализ не сформирован.')}\n\n"
         f"<b>Ориентир дальше:</b>\n"
@@ -554,9 +565,11 @@ async def send_question(message: Message, user_id: int):
 
     await message.answer(
         f"{question.get('block', BLOCKS[block_id]['label'])}\n\n"
+        f"<b>Тип мышления:</b> {question['type']}\n\n"
         f"<b>Вопрос {idx + 1}/{len(QUESTIONS)}</b>\n\n"
         f"{question['q']}\n\n"
-        f"<i>Совет: {question['hint']}</i>"
+        f"<i>Совет: {question['hint']}</i>",
+        reply_markup=question_keyboard() if "question_keyboard" in globals() else None,
     )
 
 
@@ -589,7 +602,7 @@ def build_short_result_text(user_id: int) -> str:
         "🗺 <b>КАРТА РЕЗУЛЬТАТА</b>\n\n"
         f"Всего проверено типов мышления: <b>{total_checked}</b>\n"
         f"Найдено типов мышления: <b>{found_count}</b>\n"
-        f"Зоны развития: <b>{missing_count}</b>\n\n"
+        f"Есть что проращивать: <b>{missing_count}</b>\n\n"
     )
 
     for block_id, block_data in BLOCKS.items():
@@ -605,9 +618,9 @@ def build_short_result_text(user_id: int) -> str:
             if not data:
                 continue
 
-            presence = data.get("presence", "НЕТ")
+            presence = data.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ")
             score = data.get("score", 0)
-            marker = "✅" if presence == "ЕСТЬ" else "⬜"
+            marker = "✅" if presence == "ЕСТЬ" else "🌱"
 
             block_lines.append(f"{marker} {type_name} — {score}/10")
 
@@ -785,8 +798,8 @@ async def test(message: Message):
     }
 
     for index, q in enumerate(QUESTIONS, start=1):
-        presence = "НЕТ" if q["type"] in missing_types else "ЕСТЬ"
-        score = 4 if presence == "НЕТ" else 9
+        presence = "ЕСТЬ ЧТО ПРОРАЩИВАТЬ" if q["type"] in missing_types else "ЕСТЬ"
+        score = 4 if presence == "ЕСТЬ ЧТО ПРОРАЩИВАТЬ" else 9
 
         answer_text = (
             f"Тестовый ответ пользователя на вопрос {index}. "
@@ -806,7 +819,7 @@ async def test(message: Message):
             f"В рамках проверки считается, что пользователь дал ответ на вопрос: «{q['q']}». "
             f"Если результат отмечен как ЕСТЬ, значит в ответе условно присутствуют признаки типа мышления: "
             f"логика, связь с опытом, способность объяснять свои действия и делать выводы. "
-            f"Если результат отмечен как НЕТ, значит ответ рассматривается как зона развития: "
+            f"Если результат отмечен как ЕСТЬ ЧТО ПРОРАЩИВАТЬ, значит ответ рассматривается как зона развития: "
             f"ему не хватает конкретики, личного примера, причинно-следственной связи или практического вывода. "
             f"Этот блок нужен для проверки того, как расширенный анализ отображается в PDF и PowerPoint. "
             f"В реальном прохождении здесь будет индивидуальная диагностика ответа пользователя."
@@ -1351,7 +1364,7 @@ async def process_survey_answer(message: Message, text: str):
 
         analysis = (
             "Оценка: 0\n"
-            "Результат: НЕТ\n\n"
+            "Результат: ЕСТЬ ЧТО ПРОРАЩИВАТЬ\n\n"
             "Краткий анализ:\n"
             "AI-анализ временно недоступен. Ответ не был оценён автоматически.\n\n"
             "Расширенный анализ:\n"

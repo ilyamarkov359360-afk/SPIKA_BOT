@@ -368,7 +368,7 @@ def _write_answers_analysis(pdf: MindPDF, answers: list[dict]):
         responsibility_shift = item.get("responsibility_shift", "") or "явно не выявлено"
 
         score = item.get("score", 0)
-        presence = item.get("presence", "НЕТ")
+        presence = _presence_label(item.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"))
 
         if index > 1:
             _small_divider(pdf)
@@ -543,6 +543,12 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
     found_types = _build_found_list(results)
     missing_types = _build_missing_list(results)
 
+    def _presence_label(value: str) -> str:
+        if value == "ЕСТЬ":
+            return "ЕСТЬ"
+
+        return "Есть что проращивать"
+
     # PAGE 1 - TITLE
     pdf.add_page()
 
@@ -661,9 +667,9 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
         _write_text(pdf, "Результатов пока нет.", size=10)
     else:
         for type_name, data in results.items():
-            presence = data.get("presence", "НЕТ")
+            presence = _presence_label(item.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"))
             score = data.get("score", 0)
-            marker = "+" if presence == "ЕСТЬ" else "-"
+            marker = "+" if presence == "ЕСТЬ" else "*"
             _write_text(
                 pdf,
                 f"{marker} {type_name} - {score}/10 - {presence}",
