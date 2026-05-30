@@ -72,7 +72,7 @@ def init_database():
             answer_text TEXT,
             analysis_text TEXT,
             score INTEGER DEFAULT 0,
-            presence TEXT DEFAULT 'НЕТ',
+            presence TEXT DEFAULT 'ЕСТЬ ЧТО ПРОРАЩИВАТЬ',
             full_analysis_text TEXT,
             advice_text TEXT,
 
