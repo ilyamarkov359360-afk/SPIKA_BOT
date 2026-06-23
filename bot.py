@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from html import escape
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -12,6 +13,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     KeyboardButton,
     FSInputFile,
 )
@@ -23,6 +25,12 @@ from data.blocks import BLOCKS
 from database.db import init_database
 from database.repositories import (
     save_user,
+    get_user_by_telegram_id,
+    update_user_activity,
+    update_user_phone,
+    update_user_email,
+    mark_registration_completed,
+    get_user_profile_text,
     create_or_reset_session,
     update_session_progress,
     save_answer,
@@ -56,6 +64,22 @@ from services.pdf_service import build_pdf_report
 from services.ppt_service import build_ppt_report
 
 
+MAX_ANSWER_LENGTH = int(os.getenv("MAX_ANSWER_LENGTH", "4000"))
+
+EXPERT_CONTACT_TEXT = os.getenv(
+    "EXPERT_CONTACT_TEXT",
+    "📞 Связь с экспертом пока настраивается.\n\n"
+    "После презентационной настройки здесь будет контакт, ссылка на запись "
+    "или форма заявки для Заказчика.",
+)
+
+CONSULTATION_TEXT = os.getenv(
+    "CONSULTATION_TEXT",
+    "🧑‍🏫 Запись на консультацию пока настраивается.\n\n"
+    "В рабочей версии здесь будет ссылка на календарь, сайт или контакт эксперта.",
+)
+
+
 bot = Bot(
     token=TELEGRAM_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -68,6 +92,22 @@ user_state: dict[int, int] = {}
 user_results: dict[int, dict] = {}
 user_answers: dict[int, list] = {}
 user_mode: dict[int, str] = {}
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def tg_escape(value) -> str:
+    if value is None:
+        return ""
+
+    return escape(str(value), quote=False)
+
+
+def is_valid_email(value: str) -> bool:
+    value = (value or "").strip()
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value))
 
 
 def safe_log_event(
@@ -143,6 +183,10 @@ def extract_section(text: str, start_marker: str, end_markers: list[str]) -> str
 
     return text[start_index:end_index].strip()
 
+
+# ============================================================
+# PARSING
+# ============================================================
 
 def parse_final_values_profile(text: str) -> dict:
     summary_text = extract_section(
@@ -304,21 +348,11 @@ def generate_and_save_value_profile(user_id: int) -> dict:
 
 def parse_analysis(text: str) -> dict:
     score = 0
-    presence = "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"
 
     score_match = re.search(r"Оценка:\s*([0-9]+)", text or "")
-    
-    result_match = re.search(
-        r"Результат:\s*(ЕСТЬ|ЕСТЬ ЧТО ПРОРАЩИВАТЬ)",
-        text or "",
-        re.IGNORECASE,
-    )
 
     if score_match:
         score = max(0, min(10, int(score_match.group(1))))
-
-    if result_match:
-        presence = result_match.group(1).upper()
 
     presence = "ЕСТЬ" if score >= 7 else "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"
 
@@ -434,21 +468,24 @@ def parse_analysis(text: str) -> dict:
     }
 
 
-def build_telegram_analysis_text(parsed: dict) -> str:
+# ============================================================
+# TEXT BUILDERS
+# ============================================================
 
-    result_label = parsed.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ!")
+def build_telegram_analysis_text(parsed: dict) -> str:
+    result_label = parsed.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ")
 
     if result_label != "ЕСТЬ":
-        result_label = "Есть что проращивать!"
+        result_label = "Есть что проращивать"
 
     return (
         "🧭 <b>Краткий разбор</b>\n\n"
         f"<b>Оценка:</b> {parsed.get('score', 0)}/10\n"
         f"<b>Наличие типа мышления:</b> {result_label}\n\n"
         f"<b>Что видно по ответу:</b>\n"
-        f"{parsed.get('short_analysis', 'Краткий анализ не сформирован.')}\n\n"
+        f"{tg_escape(parsed.get('short_analysis', 'Краткий анализ не сформирован.'))}\n\n"
         f"<b>Ориентир дальше:</b>\n"
-        f"{parsed.get('advice', 'Совет не сформирован.')}"
+        f"{tg_escape(parsed.get('advice', 'Совет не сформирован.'))}"
     )
 
 
@@ -457,9 +494,86 @@ def build_value_profile_ready_text(profile: dict) -> str:
         "🧭 <b>Ценностная карта собрана.</b>\n\n"
         "Система объединила сигналы из ответов и подготовила итоговую ценностную характеристику.\n\n"
         f"<b>Ценностная формула:</b>\n"
-        f"{profile.get('value_formula_text', 'Ценностная формула не сформирована.')}\n\n"
+        f"{tg_escape(profile.get('value_formula_text', 'Ценностная формула не сформирована.'))}\n\n"
         "Полный разбор ценностей, желаний, важностей, ответственности и возможных противоречий "
         "будет доступен в PDF и PowerPoint."
+    )
+
+
+def build_short_result_text(user_id: int) -> str:
+    results = user_results.get(user_id, {})
+
+    if not results:
+        return (
+            "🗺 <b>Карта результата</b>\n\n"
+            "Результатов пока нет. Пройдите маршрут или используйте /test."
+        )
+
+    total_checked = len(results)
+    found_count = sum(
+        1 for value in results.values()
+        if value.get("presence") == "ЕСТЬ"
+    )
+    growth_count = total_checked - found_count
+
+    text = (
+        "🗺 <b>КАРТА РЕЗУЛЬТАТА</b>\n\n"
+        f"Всего проверено типов мышления: <b>{total_checked}</b>\n"
+        f"Найдено типов мышления: <b>{found_count}</b>\n"
+        f"Есть что проращивать: <b>{growth_count}</b>\n\n"
+    )
+
+    for block_id, block_data in BLOCKS.items():
+        block_lines = []
+
+        for question in QUESTIONS:
+            if question["block_id"] != block_id:
+                continue
+
+            type_name = question["type"]
+            data = results.get(type_name)
+
+            if not data:
+                continue
+
+            presence = data.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ")
+            score = data.get("score", 0)
+            marker = "✅" if presence == "ЕСТЬ" else "🌱"
+
+            block_lines.append(f"{marker} {tg_escape(type_name)} — {score}/10")
+
+        if block_lines:
+            text += (
+                f"{block_data['label']}\n"
+                f"<b>{tg_escape(block_data['title'])}</b>\n"
+            )
+            text += "\n".join(block_lines)
+            text += "\n\n"
+
+    text += (
+        "🚗 <b>Итог маршрута:</b>\n"
+        "Это краткая карта результата. Полный разбор доступен в PDF и PowerPoint."
+    )
+
+    return text
+
+
+# ============================================================
+# KEYBOARDS
+# ============================================================
+
+def phone_request_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="📱 Отправить телефон",
+                    request_contact=True,
+                )
+            ],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
 
 
@@ -467,6 +581,34 @@ def main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🚗 Начать маршрут")],
+            [
+                KeyboardButton(text="👤 Мой профиль"),
+                KeyboardButton(text="❓ Подсказки маршрута"),
+            ],
+            [
+                KeyboardButton(text="🧭 Помощник маршрута"),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def question_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="❓ Подсказки маршрута"),
+                KeyboardButton(text="🧭 Помощник маршрута"),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def continue_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➡️ Следующий вопрос")],
             [
                 KeyboardButton(text="❓ Подсказки маршрута"),
                 KeyboardButton(text="🧭 Помощник маршрута"),
@@ -485,7 +627,14 @@ def result_keyboard():
                 KeyboardButton(text="📽 Презентация PPT"),
             ],
             [KeyboardButton(text="💳 Оплатить")],
-            [KeyboardButton(text="🚗 Начать маршрут")],
+            [
+                KeyboardButton(text="👤 Мой профиль"),
+                KeyboardButton(text="🚗 Начать маршрут"),
+            ],
+            [
+                KeyboardButton(text="📞 Связаться с экспертом"),
+                KeyboardButton(text="🧑‍🏫 Записаться на консультацию"),
+            ],
         ],
         resize_keyboard=True,
     )
@@ -535,16 +684,78 @@ def payment_keyboard():
     )
 
 
+# ============================================================
+# REGISTRATION
+# ============================================================
+
+async def ensure_registered_or_request_data(
+    message: Message,
+    user_id: int,
+    telegram_user=None,
+) -> bool:
+    """
+    Добавленная production-функция.
+    Ничего старого не удаляет.
+
+    Проверяет профиль:
+    - если телефона нет, просит телефон;
+    - если email нет, просит email;
+    - если всё есть, возвращает True.
+    """
+
+    user = get_user_by_telegram_id(user_id)
+
+    if not user:
+        if telegram_user:
+            save_user(
+                telegram_id=user_id,
+                username=telegram_user.username,
+                first_name=telegram_user.first_name,
+                last_name=telegram_user.last_name,
+            )
+
+        user = get_user_by_telegram_id(user_id)
+
+    if not user or not user.get("phone"):
+        user_mode[user_id] = "waiting_phone"
+
+        await message.answer(
+            "Перед началом диагностики нужно создать профиль.\n\n"
+            "Пожалуйста, отправьте номер телефона через кнопку Telegram. "
+            "Он нужен для идентификации пользователя и связи с экспертом.",
+            reply_markup=phone_request_keyboard(),
+        )
+        return False
+
+    if not user.get("email"):
+        user_mode[user_id] = "waiting_email"
+
+        await message.answer(
+            "Телефон сохранён.\n\n"
+            "Теперь напишите ваш email. "
+            "На него позже можно будет отправить PDF-отчёт и PPT-презентацию после прохождения диагностики.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return False
+
+    mark_registration_completed(user_id)
+    return True
+
+
+# ============================================================
+# QUESTIONS
+# ============================================================
+
 async def send_block_description(message: Message, block_id: str):
     block = BLOCKS[block_id]
 
     await message.answer(
         f"{block['label']}\n\n"
-        f"<b>{block['title']}</b>\n\n"
-        f"<i>{block.get('scene', '')}</i>\n\n"
-        f"{block['description']}\n\n"
+        f"<b>{tg_escape(block['title'])}</b>\n\n"
+        f"<i>{tg_escape(block.get('scene', ''))}</i>\n\n"
+        f"{tg_escape(block['description'])}\n\n"
         f"🧭 <b>Ориентир маршрута:</b>\n"
-        f"{block.get('route_hint', '')}"
+        f"{tg_escape(block.get('route_hint', ''))}"
     )
 
 
@@ -565,11 +776,11 @@ async def send_question(message: Message, user_id: int):
 
     await message.answer(
         f"{question.get('block', BLOCKS[block_id]['label'])}\n\n"
-        f"<b>Тип мышления:</b> {question['type']}\n\n"
+        f"<b>Тип мышления:</b> {tg_escape(question['type'])}\n\n"
         f"<b>Вопрос {idx + 1}/{len(QUESTIONS)}</b>\n\n"
-        f"{question['q']}\n\n"
-        f"<i>Совет: {question['hint']}</i>",
-        reply_markup=question_keyboard() if "question_keyboard" in globals() else None,
+        f"{tg_escape(question['q'])}\n\n"
+        f"<i>Совет: {tg_escape(question['hint'])}</i>",
+        reply_markup=question_keyboard(),
     )
 
 
@@ -582,63 +793,9 @@ async def send_final_message(message: Message, user_id: int):
     )
 
 
-def build_short_result_text(user_id: int) -> str:
-    results = user_results.get(user_id, {})
-
-    if not results:
-        return (
-            "🗺 <b>Карта результата</b>\n\n"
-            "Результатов пока нет. Пройдите маршрут или используйте /test."
-        )
-
-    total_checked = len(results)
-    found_count = sum(
-        1 for value in results.values()
-        if value.get("presence") == "ЕСТЬ"
-    )
-    missing_count = total_checked - found_count
-
-    text = (
-        "🗺 <b>КАРТА РЕЗУЛЬТАТА</b>\n\n"
-        f"Всего проверено типов мышления: <b>{total_checked}</b>\n"
-        f"Найдено типов мышления: <b>{found_count}</b>\n"
-        f"Есть что проращивать: <b>{missing_count}</b>\n\n"
-    )
-
-    for block_id, block_data in BLOCKS.items():
-        block_lines = []
-
-        for question in QUESTIONS:
-            if question["block_id"] != block_id:
-                continue
-
-            type_name = question["type"]
-            data = results.get(type_name)
-
-            if not data:
-                continue
-
-            presence = data.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ")
-            score = data.get("score", 0)
-            marker = "✅" if presence == "ЕСТЬ" else "🌱"
-
-            block_lines.append(f"{marker} {type_name} — {score}/10")
-
-        if block_lines:
-            text += (
-                f"{block_data['label']}\n"
-                f"<b>{block_data['title']}</b>\n"
-            )
-            text += "\n".join(block_lines)
-            text += "\n\n"
-
-    text += (
-        "🚗 <b>Итог маршрута:</b>\n"
-        "Это краткая карта результата. Полный разбор доступен в PDF и PowerPoint."
-    )
-
-    return text
-
+# ============================================================
+# START / RESUME
+# ============================================================
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -651,10 +808,8 @@ async def start(message: Message):
         last_name=message.from_user.last_name,
     )
 
+    update_user_activity(user_id)
     safe_log_event("user_started", telegram_id=user_id)
-
-    active_session = get_active_session(user_id)
-    finished_session = get_latest_finished_session(user_id)
 
     greeting_text = (
         "<b>🚗 Добро пожаловать в Город Мышления.</b>\n\n"
@@ -664,13 +819,22 @@ async def start(message: Message):
         "зайдёшь в рабочее пространство проектов и попадёшь в необычный район нестандартных решений.\n\n"
         "На каждом этапе ты отвечаешь на вопросы, а AI даёт краткий анализ и совет. "
         "В конце маршрута ты получишь PDF и PowerPoint-отчёт с полной диагностикой.\n\n"
-        "Нажми «🚗 Начать маршрут», чтобы выехать на первую улицу."
+        "Перед началом мы создадим профиль пользователя."
     )
 
-    await message.answer(
-        greeting_text,
-        reply_markup=main_keyboard(),
+    await message.answer(greeting_text)
+
+    ready = await ensure_registered_or_request_data(
+        message=message,
+        user_id=user_id,
+        telegram_user=message.from_user,
     )
+
+    if not ready:
+        return
+
+    active_session = get_active_session(user_id)
+    finished_session = get_latest_finished_session(user_id)
 
     if active_session:
         current_question = active_session.get("current_question", 0)
@@ -694,13 +858,24 @@ async def start(message: Message):
         return
 
     await message.answer(
-        "Нажми «🚗 Начать маршрут», чтобы начать движение по Городу Мышления."
+        "Профиль готов. Нажми «🚗 Начать маршрут», чтобы начать движение по Городу Мышления.",
+        reply_markup=main_keyboard(),
     )
 
 
 @dp.callback_query(F.data == "resume_survey")
 async def resume_survey(call: CallbackQuery):
     user_id = call.from_user.id
+
+    ready = await ensure_registered_or_request_data(
+        message=call.message,
+        user_id=user_id,
+        telegram_user=call.from_user,
+    )
+
+    if not ready:
+        await call.answer()
+        return
 
     active_session = get_active_session(user_id)
 
@@ -748,6 +923,16 @@ async def restart_survey(call: CallbackQuery):
         last_name=call.from_user.last_name,
     )
 
+    ready = await ensure_registered_or_request_data(
+        message=call.message,
+        user_id=user_id,
+        telegram_user=call.from_user,
+    )
+
+    if not ready:
+        await call.answer()
+        return
+
     create_or_reset_session(
         telegram_id=user_id,
         total_questions=len(QUESTIONS),
@@ -764,6 +949,10 @@ async def restart_survey(call: CallbackQuery):
     await send_question(call.message, user_id)
     await call.answer()
 
+
+# ============================================================
+# TEST MODE — НЕ ТРОГАЕМ, ОСТАВЛЯЕМ КАК ЕСТЬ
+# ============================================================
 
 @dp.message(Command("test"))
 async def test(message: Message):
@@ -952,22 +1141,27 @@ async def test(message: Message):
         "— ответственность;\n"
         "— перекладывание ответственности;\n"
         "— итоговая ценностная характеристика.\n\n"
-        f"🧭 Ценностная формула:\n{value_profile.get('value_formula_text', 'не сформирована')}\n\n"
+        f"🧭 Ценностная формула:\n{tg_escape(value_profile.get('value_formula_text', 'не сформирована'))}\n\n"
         "Можно проверить карту результата, PDF и PowerPoint.",
         reply_markup=result_keyboard(),
     )
 
+
+# ============================================================
+# FAQ
+# ============================================================
 
 @dp.message(F.text.in_({"❓ FAQ", "❓ Подсказки маршрута"}))
 async def faq_message(message: Message):
     await message.answer(
         "<b>❓ Подсказки маршрута</b>\n\n"
         "1. Отвечай подробно, но живым языком: ситуация, действие, вывод.\n"
-        "2. Оценка 8+ означает, что тип мышления проявлен.\n"
-        "3. После каждого ответа ты увидишь краткий анализ и совет.\n"
-        "4. Полный разбор будет в PDF и PowerPoint после оплаты.\n"
-        "5. Если не понимаешь вопрос — открой «🧭 Помощник маршрута».\n"
-        "6. Голосовые ответы можно отправлять как обычный ответ.\n\n"
+        "2. Оценка 7+ означает, что тип мышления проявлен.\n"
+        "3. Если оценка ниже 7 — это не «нет», а зона: есть что проращивать.\n"
+        "4. После каждого ответа ты увидишь краткий анализ и совет.\n"
+        "5. Полный разбор будет в PDF и PowerPoint после завершения маршрута.\n"
+        "6. Если не понимаешь вопрос — открой «🧭 Помощник маршрута».\n"
+        "7. Голосовые ответы можно отправлять как обычный ответ.\n\n"
         "🧭 Главный ориентир: не пытайся отвечать идеально. "
         "Показывай реальный опыт, мысли, решения и направление движения."
     )
@@ -982,6 +1176,10 @@ async def faq_callback(call: CallbackQuery):
     )
     await call.answer()
 
+
+# ============================================================
+# PAYMENT — НЕ ТРОГАЕМ
+# ============================================================
 
 @dp.message(F.text == "💳 Оплатить")
 async def pay_message(message: Message):
@@ -1018,6 +1216,10 @@ async def payment_confirmed(call: CallbackQuery):
 
     await call.answer()
 
+
+# ============================================================
+# RESULTS / REPORTS — ОПЛАТУ НЕ ТРОГАЕМ
+# ============================================================
 
 @dp.callback_query(F.data == "short_result")
 async def short_result(call: CallbackQuery):
@@ -1165,6 +1367,10 @@ async def send_ppt(message: Message, user_id: int | None = None):
         )
 
 
+# ============================================================
+# CONSULTANT
+# ============================================================
+
 @dp.callback_query(F.data == "consultant")
 async def consultant_callback(call: CallbackQuery):
     user_mode[call.from_user.id] = "consultant"
@@ -1188,6 +1394,42 @@ async def consultant_message_start(message: Message):
     )
 
 
+# ============================================================
+# CONTACT / VOICE
+# ============================================================
+
+@dp.message(F.contact)
+async def handle_contact(message: Message):
+    user_id = message.from_user.id
+
+    if not message.contact:
+        return
+
+    if message.contact.user_id != user_id:
+        await message.answer(
+            "Пожалуйста, отправьте именно свой контакт через кнопку Telegram.",
+            reply_markup=phone_request_keyboard(),
+        )
+        return
+
+    save_user(
+        telegram_id=user_id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name,
+    )
+
+    update_user_phone(user_id, message.contact.phone_number)
+    user_mode[user_id] = "waiting_email"
+
+    await message.answer(
+        "Телефон сохранён.\n\n"
+        "Теперь напишите ваш email. "
+        "После прохождения диагностики на него можно будет отправить PDF и PPT отчёты.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
 @dp.message(F.voice)
 async def handle_voice(message: Message):
     user_id = message.from_user.id
@@ -1204,7 +1446,7 @@ async def handle_voice(message: Message):
         if os.path.exists(path):
             os.remove(path)
 
-    await message.answer(f"🎤 Распознано:\n{text}")
+    await message.answer(f"🎤 Распознано:\n{tg_escape(text)}")
 
     if user_mode.get(user_id) == "consultant":
         idx = user_state.get(user_id, 0)
@@ -1212,12 +1454,16 @@ async def handle_voice(message: Message):
 
         answer = ask_consultant(text, current_question)
 
-        await message.answer(f"🧭 {answer}")
+        await message.answer(f"🧭 {tg_escape(answer)}")
         user_mode[user_id] = "survey"
         return
 
     await process_survey_answer(message, text)
 
+
+# ============================================================
+# SURVEY FLOW
+# ============================================================
 
 async def begin_survey_flow(message: Message):
     user_id = message.from_user.id
@@ -1228,6 +1474,15 @@ async def begin_survey_flow(message: Message):
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name,
     )
+
+    ready = await ensure_registered_or_request_data(
+        message=message,
+        user_id=user_id,
+        telegram_user=message.from_user,
+    )
+
+    if not ready:
+        return
 
     active_session = get_active_session(user_id)
 
@@ -1270,13 +1525,57 @@ async def start_survey_button(message: Message):
     await begin_survey_flow(message)
 
 
+# ============================================================
+# TEXT HANDLER
+# ============================================================
+
 @dp.message(F.text)
 async def handle_text(message: Message):
     user_id = message.from_user.id
     text = message.text.strip()
 
+    update_user_activity(user_id)
+
+    if user_mode.get(user_id) == "waiting_phone":
+        await message.answer(
+            "Пожалуйста, отправьте телефон через кнопку Telegram.",
+            reply_markup=phone_request_keyboard(),
+        )
+        return
+
+    if user_mode.get(user_id) == "waiting_email":
+        if not is_valid_email(text):
+            await message.answer(
+                "Email выглядит некорректно.\n\n"
+                "Пожалуйста, напишите email в формате: name@example.com"
+            )
+            return
+
+        update_user_email(user_id, text)
+        mark_registration_completed(user_id)
+        user_mode[user_id] = "main_menu"
+
+        await message.answer(
+            "Email сохранён. Регистрация завершена.\n\n"
+            "Теперь можно начать маршрут диагностики мышления.",
+            reply_markup=main_keyboard(),
+        )
+        return
+
     if text in {"🧠 Начать опрос", "🚗 Начать маршрут"}:
         await begin_survey_flow(message)
+        return
+
+    if text in {"➡️ Следующий вопрос", "▶️ Следующий вопрос", "Следующий вопрос"}:
+        user_mode[user_id] = "survey"
+        await send_question(message, user_id)
+        return
+
+    if text in {"👤 Мой профиль"}:
+        await message.answer(
+            tg_escape(get_user_profile_text(user_id)),
+            reply_markup=main_keyboard(),
+        )
         return
 
     if text in {"❓ FAQ", "❓ Подсказки маршрута"}:
@@ -1315,17 +1614,33 @@ async def handle_text(message: Message):
         )
         return
 
+    if text == "📞 Связаться с экспертом":
+        await message.answer(EXPERT_CONTACT_TEXT, reply_markup=main_keyboard())
+        return
+
+    if text == "🧑‍🏫 Записаться на консультацию":
+        await message.answer(CONSULTATION_TEXT, reply_markup=main_keyboard())
+        return
+
     if user_mode.get(user_id) == "consultant":
         idx = user_state.get(user_id, 0)
         current_question = QUESTIONS[idx] if idx < len(QUESTIONS) else None
         answer = ask_consultant(text, current_question)
 
         await message.answer(
-            f"🧭 {answer}\n\n"
+            f"🧭 {tg_escape(answer)}\n\n"
             "Возвращаемся к маршруту опроса."
         )
 
         user_mode[user_id] = "survey"
+        return
+
+    if user_mode.get(user_id) == "waiting_next":
+        await message.answer(
+            "🚦 Мы уже разобрали предыдущий ответ.\n\n"
+            "Чтобы продолжить маршрут, нажмите «➡️ Следующий вопрос».",
+            reply_markup=continue_keyboard(),
+        )
         return
 
     await process_survey_answer(message, text)
@@ -1333,6 +1648,13 @@ async def handle_text(message: Message):
 
 async def process_survey_answer(message: Message, text: str):
     user_id = message.from_user.id
+
+    if len(text) > MAX_ANSWER_LENGTH:
+        await message.answer(
+            f"Ответ слишком длинный. Сократите его до {MAX_ANSWER_LENGTH} символов: "
+            "оставьте ситуацию, действие, результат и вывод."
+        )
+        return
 
     if user_id not in user_state:
         await message.answer("Нажмите «🚗 Начать маршрут» или /start.")
@@ -1486,8 +1808,17 @@ async def process_survey_answer(message: Message, text: str):
         status="active",
     )
 
-    await send_question(message, user_id)
+    user_mode[user_id] = "waiting_next"
 
+    await message.answer(
+        "Готово. Можно перейти к следующему вопросу.",
+        reply_markup=continue_keyboard(),
+    )
+
+
+# ============================================================
+# APP ENTRYPOINT
+# ============================================================
 
 async def main():
     init_database()
