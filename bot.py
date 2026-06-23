@@ -40,6 +40,8 @@ from database.repositories import (
     get_latest_answers_as_runtime_data,
     save_value_profile,
     get_latest_value_profile,
+    get_latest_report_by_type,
+    mark_report_email_sent,
 )
 
 from database.monitoring_repository import (
@@ -62,6 +64,10 @@ from services.payment_service import (
 
 from services.pdf_service import build_pdf_report
 from services.ppt_service import build_ppt_report
+from services.email_service import (
+    is_email_configured,
+    send_reports_to_email,
+)
 
 
 MAX_ANSWER_LENGTH = int(os.getenv("MAX_ANSWER_LENGTH", "4000"))
@@ -182,6 +188,24 @@ def extract_section(text: str, start_marker: str, end_markers: list[str]) -> str
             end_index = min(end_index, marker_index)
 
     return text[start_index:end_index].strip()
+
+
+def get_report_file_path(report: dict | None, expected_type: str) -> str | None:
+    """
+    Берёт путь к файлу отчёта из записи reports.
+    Сохраняет совместимость со старым file_path и новыми pdf_path/ppt_path.
+    """
+
+    if not report:
+        return None
+
+    if expected_type == "pdf":
+        return report.get("pdf_path") or report.get("file_path")
+
+    if expected_type == "ppt":
+        return report.get("ppt_path") or report.get("file_path")
+
+    return report.get("file_path")
 
 
 # ============================================================
@@ -626,6 +650,7 @@ def result_keyboard():
                 KeyboardButton(text="📄 PDF-отчёт"),
                 KeyboardButton(text="📽 Презентация PPT"),
             ],
+            [KeyboardButton(text="📩 Отправить отчёты на email")],
             [KeyboardButton(text="💳 Оплатить")],
             [
                 KeyboardButton(text="👤 Мой профиль"),
@@ -951,7 +976,7 @@ async def restart_survey(call: CallbackQuery):
 
 
 # ============================================================
-# TEST MODE — НЕ ТРОГАЕМ, ОСТАВЛЯЕМ КАК ЕСТЬ
+# TEST MODE — НЕ ТРОГАЕМ
 # ============================================================
 
 @dp.message(Command("test"))
@@ -1368,6 +1393,123 @@ async def send_ppt(message: Message, user_id: int | None = None):
 
 
 # ============================================================
+# EMAIL REPORT DELIVERY — ДОБАВЛЕНО НОВЫМ СЛОЕМ
+# ============================================================
+
+@dp.message(F.text == "📩 Отправить отчёты на email")
+async def email_reports_message(message: Message):
+    await send_reports_email_flow(message)
+
+
+async def send_reports_email_flow(message: Message):
+    user_id = message.from_user.id
+
+    user = get_user_by_telegram_id(user_id)
+
+    if not user:
+        await message.answer(
+            "👤 Профиль пользователя не найден.\n\n"
+            "Нажмите /start и завершите регистрацию.",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    email = user.get("email")
+
+    if not email:
+        user_mode[user_id] = "waiting_email"
+        await message.answer(
+            "В профиле ещё нет email.\n\n"
+            "Напишите email, и после этого можно будет отправить отчёты.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    if not is_email_configured():
+        await message.answer(
+            "📩 Email-сервис пока не настроен.\n\n"
+            "Функция добавлена в код, но для отправки нужно заполнить SMTP-настройки "
+            "в Railway Variables:\n\n"
+            "EMAIL_ENABLED=true\n"
+            "SMTP_HOST\n"
+            "SMTP_PORT\n"
+            "SMTP_USER\n"
+            "SMTP_PASSWORD\n"
+            "SMTP_FROM",
+            reply_markup=result_keyboard(),
+        )
+        return
+
+    pdf_report = get_latest_report_by_type(user_id, "pdf")
+    ppt_report = get_latest_report_by_type(user_id, "ppt")
+
+    pdf_path = get_report_file_path(pdf_report, "pdf")
+    ppt_path = get_report_file_path(ppt_report, "ppt")
+
+    if not pdf_path or not ppt_path:
+        await message.answer(
+            "📩 Для отправки на email нужны оба файла: PDF и PowerPoint.\n\n"
+            "Сначала сформируйте отчёты кнопками:\n"
+            "📄 PDF-отчёт\n"
+            "📽 Презентация PPT\n\n"
+            "После этого нажмите «📩 Отправить отчёты на email».",
+            reply_markup=result_keyboard(),
+        )
+        return
+
+    await message.answer("📩 Отправляю отчёты на email...")
+
+    try:
+        with measure_event("email_reports_sending", telegram_id=user_id):
+            sent = send_reports_to_email(
+                email_to=email,
+                pdf_path=pdf_path,
+                ppt_path=ppt_path,
+            )
+
+        if not sent:
+            await message.answer(
+                "📩 Email-сервис выключен или не настроен.\n\n"
+                "Проверьте EMAIL_ENABLED и SMTP-переменные в Railway.",
+                reply_markup=result_keyboard(),
+            )
+            return
+
+        if pdf_report and pdf_report.get("id"):
+            mark_report_email_sent(pdf_report["id"])
+
+        if ppt_report and ppt_report.get("id"):
+            mark_report_email_sent(ppt_report["id"])
+
+        safe_log_event(
+            "email_reports_sent",
+            telegram_id=user_id,
+            details=f"email={email}",
+        )
+
+        await message.answer(
+            f"✅ Отчёты отправлены на email:\n{tg_escape(email)}",
+            reply_markup=result_keyboard(),
+        )
+
+    except Exception as error:
+        safe_log_event(
+            "email_reports_error",
+            telegram_id=user_id,
+            details=str(error),
+        )
+
+        print(f"Email reports sending error: {error}")
+
+        await message.answer(
+            "📩 Не удалось отправить отчёты на email.\n\n"
+            "Ошибка записана в мониторинг. Проверьте SMTP-настройки, пароль приложения "
+            "и наличие файлов PDF/PPT.",
+            reply_markup=result_keyboard(),
+        )
+
+
+# ============================================================
 # CONSULTANT
 # ============================================================
 
@@ -1588,6 +1730,10 @@ async def handle_text(message: Message):
 
     if text == "💳 Оплатить":
         await pay_message(message)
+        return
+
+    if text == "📩 Отправить отчёты на email":
+        await send_reports_email_flow(message)
         return
 
     if text in {"📄 PDF", "📄 PDF-отчёт"}:
