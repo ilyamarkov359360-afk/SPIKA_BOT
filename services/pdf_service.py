@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -34,35 +35,88 @@ BLOCK_TITLES = {
 
 
 def _find_regular_font() -> str:
+    """
+    Ищет обычный Unicode-шрифт для PDF.
+
+    Важно:
+    - Railway работает на Linux.
+    - Windows Arial там отсутствует.
+    - Поэтому нужен системный DejaVu из пакета fonts-dejavu-core.
+    """
+
     candidates = [
+        # Локальные шрифты внутри проекта
         FONTS_DIR / "DejaVuSans.ttf",
+        FONTS_DIR / "DejaVuSansCondensed.ttf",
         FONTS_DIR / "Arial.ttf",
+
+        # Railway / Linux / Debian / Ubuntu
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSans.ttf"),
+
+        # Windows для локальной проверки
         Path(r"C:\Windows\Fonts\arial.ttf"),
+        Path(r"C:\Windows\Fonts\Arial.ttf"),
+        Path(r"C:\Windows\Fonts\calibri.ttf"),
+        Path(r"C:\Windows\Fonts\Calibri.ttf"),
     ]
 
     for path in candidates:
         if path.exists():
+            print(f"PDF REGULAR FONT FOUND: {path}")
             return str(path)
 
     raise FileNotFoundError(
         "Не найден Unicode-шрифт для PDF. "
-        "Положите DejaVuSans.ttf в assets/fonts/ "
-        "или используйте Windows Arial."
+        "На Railway добавьте nixpacks.toml с fonts-dejavu-core "
+        "или положите DejaVuSans.ttf в assets/fonts/."
     )
 
 
 def _find_bold_font() -> str:
+    """
+    Ищет жирный Unicode-шрифт для PDF.
+    Если жирный не найден, возвращает обычный шрифт.
+    """
+
     candidates = [
+        # Локальные шрифты внутри проекта
         FONTS_DIR / "DejaVuSans-Bold.ttf",
+        FONTS_DIR / "DejaVuSansCondensed-Bold.ttf",
         FONTS_DIR / "Arial-Bold.ttf",
+
+        # Railway / Linux / Debian / Ubuntu
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+
+        # Windows для локальной проверки
         Path(r"C:\Windows\Fonts\arialbd.ttf"),
+        Path(r"C:\Windows\Fonts\Arialbd.ttf"),
+        Path(r"C:\Windows\Fonts\calibrib.ttf"),
+        Path(r"C:\Windows\Fonts\Calibrib.ttf"),
     ]
 
     for path in candidates:
         if path.exists():
+            print(f"PDF BOLD FONT FOUND: {path}")
             return str(path)
 
+    print("PDF BOLD FONT NOT FOUND. USING REGULAR FONT.")
     return _find_regular_font()
+
+
+def _presence_label(value: str) -> str:
+    """
+    Единый формат отображения результата.
+    В отчёте не используем слово НЕТ.
+    """
+
+    if value == "ЕСТЬ":
+        return "ЕСТЬ"
+
+    return "Есть что проращивать"
 
 
 def _safe_text(value) -> str:
@@ -102,6 +156,11 @@ def _safe_text(value) -> str:
         "▶️": "",
         "🔁": "",
         "🚦": "",
+        "📞": "",
+        "🧑‍🏫": "",
+        "📩": "",
+        "👤": "",
+        "🔁": "",
         "—": "-",
         "–": "-",
         "\u00a0": " ",
@@ -411,112 +470,52 @@ def _write_answers_analysis(pdf: MindPDF, answers: list[dict]):
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Краткий анализ:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Краткий анализ:", size=10, bold=True, line_height=7)
         _write_text(pdf, short_analysis, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Расширенный анализ:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Расширенный анализ:", size=10, bold=True, line_height=7)
         _write_text(pdf, full_analysis, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Ориентир дальше:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Ориентир дальше:", size=10, bold=True, line_height=7)
         _write_text(pdf, advice, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Ценностная диагностика:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Ценностная диагностика:", size=10, bold=True, line_height=7)
         _write_text(pdf, values_analysis, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Выявленные ценности:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Выявленные ценности:", size=10, bold=True, line_height=7)
         _write_text(pdf, detected_values, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Выявленные желания:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Выявленные желания:", size=10, bold=True, line_height=7)
         _write_text(pdf, detected_desires, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Выявленные важности:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Выявленные важности:", size=10, bold=True, line_height=7)
         _write_text(pdf, detected_importance, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Возможные противоречия:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Возможные противоречия:", size=10, bold=True, line_height=7)
         _write_text(pdf, contradictions, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Ответственность:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Ответственность:", size=10, bold=True, line_height=7)
         _write_text(pdf, responsibility, size=10, line_height=7)
 
         pdf.ln(2)
 
-        _write_text(
-            pdf,
-            "Перекладывание ответственности:",
-            size=10,
-            bold=True,
-            line_height=7,
-        )
+        _write_text(pdf, "Перекладывание ответственности:", size=10, bold=True, line_height=7)
         _write_text(pdf, responsibility_shift, size=10, line_height=7)
 
         pdf.ln(5)
@@ -526,7 +525,6 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
     value_profile = get_latest_value_profile(user_id)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    FONTS_DIR.mkdir(parents=True, exist_ok=True)
 
     file_path = REPORTS_DIR / f"report_{user_id}.pdf"
 
@@ -536,18 +534,12 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
     pdf = MindPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    pdf.add_font("MindFont", "", regular_font)
-    pdf.add_font("MindFont", "B", bold_font)
+    pdf.add_font("MindFont", "", regular_font, uni=True)
+    pdf.add_font("MindFont", "B", bold_font, uni=True)
 
     summary = _calculate_summary(results)
     found_types = _build_found_list(results)
     missing_types = _build_missing_list(results)
-
-    def _presence_label(value: str) -> str:
-        if value == "ЕСТЬ":
-            return "ЕСТЬ"
-
-        return "Есть что проращивать"
 
     # PAGE 1 - TITLE
     pdf.add_page()
@@ -611,13 +603,7 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     _small_divider(pdf)
 
-    _write_text(
-        pdf,
-        "Назначение отчёта",
-        size=13,
-        bold=True,
-        line_height=8,
-    )
+    _write_text(pdf, "Назначение отчёта", size=13, bold=True, line_height=8)
 
     _write_text(
         pdf,
@@ -644,12 +630,7 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     pdf.ln(5)
 
-    _write_text(
-        pdf,
-        "Общая диагностика",
-        size=13,
-        bold=True,
-    )
+    _write_text(pdf, "Общая диагностика", size=13, bold=True)
 
     _write_text(
         pdf,
@@ -667,9 +648,10 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
         _write_text(pdf, "Результатов пока нет.", size=10)
     else:
         for type_name, data in results.items():
-            presence = _presence_label(item.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"))
+            presence = _presence_label(data.get("presence", "ЕСТЬ ЧТО ПРОРАЩИВАТЬ"))
             score = data.get("score", 0)
-            marker = "+" if presence == "ЕСТЬ" else "*"
+            marker = "+" if data.get("presence") == "ЕСТЬ" else "*"
+
             _write_text(
                 pdf,
                 f"{marker} {type_name} - {score}/10 - {presence}",
@@ -784,12 +766,7 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
 
     pdf.ln(5)
 
-    _write_text(
-        pdf,
-        "Лозунг",
-        size=13,
-        bold=True,
-    )
+    _write_text(pdf, "Лозунг", size=13, bold=True)
 
     _write_text(pdf, _slogan(summary), size=10, line_height=7)
 
@@ -827,5 +804,8 @@ def build_pdf_report(user_id: int, results: dict, answers: list[dict]) -> str:
     )
 
     pdf.output(str(file_path))
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"PDF-файл не был создан: {file_path}")
 
     return str(file_path)
