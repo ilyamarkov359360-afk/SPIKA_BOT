@@ -17,7 +17,10 @@ from config import (
 def is_email_configured() -> bool:
     """
     Проверяет, настроена ли email-отправка.
-    Если EMAIL_ENABLED=false — сервис считается выключенным.
+
+    EMAIL_ENABLED должен быть true.
+    Также должны быть заполнены SMTP_HOST, SMTP_PORT,
+    SMTP_USER, SMTP_PASSWORD, SMTP_FROM.
     """
 
     if not EMAIL_ENABLED:
@@ -70,7 +73,7 @@ def _attach_file(message: EmailMessage, file_path: str):
     if not path.exists():
         raise FileNotFoundError(f"Файл не найден: {file_path}")
 
-    maintype, subtype = _guess_mime_type(file_path)
+    maintype, subtype = _guess_mime_type(str(path))
 
     with open(path, "rb") as file:
         file_data = file.read()
@@ -109,9 +112,15 @@ def send_reports_to_email(
     """
     Отправляет PDF/PPT отчёты пользователю на email.
 
+    Универсальная логика:
+    - пользовательская почта может быть любой: gmail, yandex, mail, list, корпоративная;
+    - отправитель один: служебная почта проекта из Railway Variables;
+    - SMTP_PORT=465 работает через SSL;
+    - SMTP_PORT=587 работает через STARTTLS.
+
     Возвращает:
     True  — письмо отправлено
-    False — email-сервис не настроен
+    False — email-сервис выключен или не настроен
     """
 
     email_to = (email_to or "").strip()
@@ -139,9 +148,16 @@ def send_reports_to_email(
     if ppt_path:
         _attach_file(message, ppt_path)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.starttls()
-        smtp.login(SMTP_USER, SMTP_PASSWORD)
-        smtp.send_message(message)
+    smtp_port = int(SMTP_PORT)
+
+    if smtp_port == 465:
+        with smtplib.SMTP_SSL(SMTP_HOST, smtp_port) as smtp:
+            smtp.login(SMTP_USER, SMTP_PASSWORD)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(SMTP_HOST, smtp_port) as smtp:
+            smtp.starttls()
+            smtp.login(SMTP_USER, SMTP_PASSWORD)
+            smtp.send_message(message)
 
     return True

@@ -19,7 +19,7 @@ EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").strip().lower() == "true"
 MONITORING_SITE_ENABLED = os.getenv("MONITORING_SITE_ENABLED", "true").strip().lower() == "true"
 
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER).strip()
