@@ -39,7 +39,6 @@ from database.repositories import (
     get_latest_finished_session,
     get_latest_answers_as_runtime_data,
     save_value_profile,
-    get_latest_value_profile,
     get_latest_report_by_type,
     mark_report_email_sent,
 )
@@ -1280,6 +1279,17 @@ async def pdf_callback(call: CallbackQuery):
 
 
 async def send_pdf(message: Message, user_id: int | None = None):
+    """
+    Корректная генерация PDF-отчёта.
+
+    Важно:
+    - искусственная ошибка для Railway Monitoring убрана;
+    - measure_event("pdf_generation") убран из PDF-кнопки;
+    - safe_log_event("pdf_error") убран из PDF-кнопки;
+    - пользователь получает понятную техническую причину, если PDF реально не создан;
+    - при успешной генерации PDF сохраняется в reports и отправляется файлом в Telegram.
+    """
+
     if user_id is None:
         user_id = message.from_user.id
 
@@ -1299,22 +1309,53 @@ async def send_pdf(message: Message, user_id: int | None = None):
         )
         return
 
-    path = build_pdf_report(
-        user_id,
-        user_results.get(user_id, {}),
-        user_answers.get(user_id, []),
-    )
+    try:
+        path = build_pdf_report(
+            user_id,
+            user_results.get(user_id, {}),
+            user_answers.get(user_id, []),
+        )
 
-    save_report(
-        telegram_id=user_id,
-        report_type="pdf",
-        file_path=path,
-    )
+        if not path:
+            await message.answer(
+                "📄 PDF-сервис не вернул путь к файлу отчёта.\n\n"
+                "Проверьте services/pdf_service.py."
+            )
+            return
 
-    await message.answer_document(
-        FSInputFile(path),
-        caption="📄 Ваш PDF-отчёт готов.",
-    )
+        if not os.path.exists(path):
+            await message.answer(
+                "📄 PDF был сформирован, но файл не найден на диске.\n\n"
+                f"<b>Путь:</b> {tg_escape(path)}\n\n"
+                "Проверьте папку сохранения отчётов в services/pdf_service.py."
+            )
+            return
+
+        save_report(
+            telegram_id=user_id,
+            report_type="pdf",
+            file_path=path,
+        )
+
+        await message.answer_document(
+            FSInputFile(path),
+            caption="📄 Ваш PDF-отчёт готов.",
+            reply_markup=result_keyboard(),
+        )
+
+    except Exception as error:
+        error_text = str(error)
+        print(f"PDF generation error: {error_text}")
+
+        await message.answer(
+            "📄 Не удалось сформировать PDF-отчёт.\n\n"
+            f"<b>Техническая причина:</b>\n"
+            f"{tg_escape(error_text)}\n\n"
+            "Это уже не искусственная ошибка Railway Monitoring. "
+            "Если причина связана со шрифтом, нужно исправить services/pdf_service.py "
+            "и добавить Unicode-шрифт для Railway/Linux.",
+            reply_markup=result_keyboard(),
+        )
 
 
 @dp.message(F.text.in_({"📽 PowerPoint", "📽 Презентация PPT"}))
