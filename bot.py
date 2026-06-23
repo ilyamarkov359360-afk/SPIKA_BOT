@@ -1425,6 +1425,13 @@ async def send_reports_email_flow(message: Message):
         )
         return
 
+    if not is_paid(user_id):
+        await message.answer(
+            "🔒 Отправка PDF и PowerPoint на email доступна после оплаты.",
+            reply_markup=payment_keyboard(),
+        )
+        return
+
     if not is_email_configured():
         await message.answer(
             "📩 Email-сервис пока не настроен.\n\n"
@@ -1440,26 +1447,113 @@ async def send_reports_email_flow(message: Message):
         )
         return
 
+    loaded = load_user_runtime_data_if_needed(user_id)
+
+    if not loaded:
+        await message.answer(
+            "📩 Не удалось подготовить отчёты для email: результатов пока нет.\n\n"
+            "Пройдите маршрут или используйте команду /test.",
+            reply_markup=result_keyboard(),
+        )
+        return
+
+    await message.answer(
+        "📩 Готовлю PDF и PowerPoint для отправки на email...\n\n"
+        "Если файлы ещё не были сформированы, я создам их автоматически."
+    )
+
     pdf_report = get_latest_report_by_type(user_id, "pdf")
     ppt_report = get_latest_report_by_type(user_id, "ppt")
 
     pdf_path = get_report_file_path(pdf_report, "pdf")
     ppt_path = get_report_file_path(ppt_report, "ppt")
 
-    if not pdf_path or not ppt_path:
-        await message.answer(
-            "📩 Для отправки на email нужны оба файла: PDF и PowerPoint.\n\n"
-            "Сначала сформируйте отчёты кнопками:\n"
-            "📄 PDF-отчёт\n"
-            "📽 Презентация PPT\n\n"
-            "После этого нажмите «📩 Отправить отчёты на email».",
-            reply_markup=result_keyboard(),
-        )
-        return
-
-    await message.answer("📩 Отправляю отчёты на email...")
-
     try:
+        # Если PDF ещё не создан или файл отсутствует на диске Railway,
+        # создаём PDF заново.
+        if not pdf_path or not os.path.exists(pdf_path):
+            with measure_event("pdf_generation_for_email", telegram_id=user_id):
+                pdf_path = build_pdf_report(
+                    user_id,
+                    user_results.get(user_id, {}),
+                    user_answers.get(user_id, []),
+                )
+
+            pdf_report_id = save_report(
+                telegram_id=user_id,
+                report_type="pdf",
+                file_path=pdf_path,
+            )
+
+            pdf_report = {
+                "id": pdf_report_id,
+                "file_path": pdf_path,
+                "pdf_path": pdf_path,
+            }
+
+            safe_log_event(
+                "pdf_generated_for_email",
+                telegram_id=user_id,
+                details=f"path={pdf_path}",
+            )
+
+        # Если PPT ещё не создан или файл отсутствует на диске Railway,
+        # создаём PPT заново.
+        if not ppt_path or not os.path.exists(ppt_path):
+            with measure_event("ppt_generation_for_email", telegram_id=user_id):
+                ppt_path = build_ppt_report(
+                    user_id,
+                    user_results.get(user_id, {}),
+                    user_answers.get(user_id, []),
+                )
+
+            ppt_report_id = save_report(
+                telegram_id=user_id,
+                report_type="ppt",
+                file_path=ppt_path,
+            )
+
+            ppt_report = {
+                "id": ppt_report_id,
+                "file_path": ppt_path,
+                "ppt_path": ppt_path,
+            }
+
+            safe_log_event(
+                "ppt_generated_for_email",
+                telegram_id=user_id,
+                details=f"path={ppt_path}",
+            )
+
+        if not pdf_path or not ppt_path:
+            await message.answer(
+                "📩 Не удалось подготовить оба файла для отправки.\n\n"
+                "PDF или PowerPoint не были сформированы. "
+                "Проверьте логи Railway.",
+                reply_markup=result_keyboard(),
+            )
+            return
+
+        if not os.path.exists(pdf_path):
+            await message.answer(
+                "📩 PDF-файл был записан в базу, но не найден на диске Railway.\n\n"
+                "Попробуйте ещё раз нажать «📩 Отправить отчёты на email» "
+                "или проверьте генерацию PDF в логах.",
+                reply_markup=result_keyboard(),
+            )
+            return
+
+        if not os.path.exists(ppt_path):
+            await message.answer(
+                "📩 PowerPoint-файл был записан в базу, но не найден на диске Railway.\n\n"
+                "Попробуйте ещё раз нажать «📩 Отправить отчёты на email» "
+                "или проверьте генерацию PPT в логах.",
+                reply_markup=result_keyboard(),
+            )
+            return
+
+        await message.answer("📩 Отправляю PDF и PowerPoint на email...")
+
         with measure_event("email_reports_sending", telegram_id=user_id):
             sent = send_reports_to_email(
                 email_to=email,
@@ -1484,11 +1578,11 @@ async def send_reports_email_flow(message: Message):
         safe_log_event(
             "email_reports_sent",
             telegram_id=user_id,
-            details=f"email={email}",
+            details=f"email={email}; pdf={pdf_path}; ppt={ppt_path}",
         )
 
         await message.answer(
-            f"✅ Отчёты отправлены на email:\n{tg_escape(email)}",
+            f"✅ Отчёты успешно отправлены на email:\n{tg_escape(email)}",
             reply_markup=result_keyboard(),
         )
 
@@ -1503,8 +1597,13 @@ async def send_reports_email_flow(message: Message):
 
         await message.answer(
             "📩 Не удалось отправить отчёты на email.\n\n"
-            "Ошибка записана в мониторинг. Проверьте SMTP-настройки, пароль приложения "
-            "и наличие файлов PDF/PPT.",
+            "Возможные причины:\n"
+            "1. Ошибка генерации PDF.\n"
+            "2. Ошибка генерации PowerPoint.\n"
+            "3. Неверные SMTP-настройки.\n"
+            "4. Неверный пароль приложения почты.\n"
+            "5. Railway не смог найти файл отчёта.\n\n"
+            "Ошибка записана в мониторинг и логи Railway.",
             reply_markup=result_keyboard(),
         )
 
