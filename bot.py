@@ -1299,35 +1299,22 @@ async def send_pdf(message: Message, user_id: int | None = None):
         )
         return
 
-    try:
-        with measure_event("pdf_generation", telegram_id=user_id):
-            path = build_pdf_report(
-                user_id,
-                user_results.get(user_id, {}),
-                user_answers.get(user_id, []),
-            )
+    path = build_pdf_report(
+        user_id,
+        user_results.get(user_id, {}),
+        user_answers.get(user_id, []),
+    )
 
-        save_report(
-            telegram_id=user_id,
-            report_type="pdf",
-            file_path=path,
-        )
+    save_report(
+        telegram_id=user_id,
+        report_type="pdf",
+        file_path=path,
+    )
 
-        safe_log_event("pdf_generated", telegram_id=user_id)
-
-        await message.answer_document(
-            FSInputFile(path),
-            caption="📄 Ваш PDF-отчёт готов.",
-        )
-
-    except Exception as error:
-        safe_log_event("pdf_error", telegram_id=user_id, details=str(error))
-        print(f"PDF generation error: {error}")
-
-        await message.answer(
-            "📄 Не удалось сформировать PDF-отчёт. "
-            "Ошибка записана в мониторинг."
-        )
+    await message.answer_document(
+        FSInputFile(path),
+        caption="📄 Ваш PDF-отчёт готов.",
+    )
 
 
 @dp.message(F.text.in_({"📽 PowerPoint", "📽 Презентация PPT"}))
